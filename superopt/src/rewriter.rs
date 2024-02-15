@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use quizx::{
-    flow::causal::CausalFlow,
+    flow::causal::{CausalFlow, ConvexHull},
     graph::GraphLike,
     portmatching::{CausalMatcher, CausalPattern, PatternID},
     vec_graph::V,
@@ -42,7 +42,7 @@ struct RhsIdx(usize);
 
 /// A rewriter that applies causal flow preserving rewrites.
 ///
-/// The set of possible rewrites are given as a list of `RewriteSet`s.
+/// The set of possible rewrite rule are given as a list of `RewriteSet`s.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct CausalRewriter<G: GraphLike> {
     matcher: CausalMatcher<G>,
@@ -56,6 +56,25 @@ pub struct Rewrite<G> {
     rhs_boundary: Vec<V>,
     lhs_internal: HashSet<V>,
     rhs: G,
+}
+
+pub trait RewriteableGraph: GraphLike {
+    fn apply<G: GraphLike>(&mut self, rewrite: &Rewrite<G>);
+}
+
+impl<G: GraphLike> Rewrite<G> {
+    fn lhs_vertices(&self) -> impl Iterator<Item = &V> + '_ {
+        self.lhs_boundary.iter().chain(&self.lhs_internal)
+    }
+
+    fn is_flow_preserving(&self, graph: &impl RewriteableGraph, flow: CausalFlow) -> bool {
+        let hull = ConvexHull::from_region(self.lhs_vertices(), &flow);
+        let mut subgraph = graph.induced_subgraph(hull.vertices());
+        subgraph.set_inputs(hull.inputs().to_owned());
+        subgraph.set_outputs(hull.outputs().to_owned());
+        subgraph.apply(self);
+        CausalFlow::from_graph(&subgraph).is_ok()
+    }
 }
 
 impl<G: GraphLike> Rewriter for CausalRewriter<G> {
@@ -79,6 +98,7 @@ impl<G: GraphLike> Rewriter for CausalRewriter<G> {
                     }
                 })
             })
+            .filter(|rw| rw.is_flow_preserving(graph, flow))
             .collect()
     }
 }
@@ -112,5 +132,16 @@ impl<G: GraphLike + Clone> CausalRewriter<G> {
             lhs_to_rhs: map_to_rhs,
             all_rhs,
         }
+    }
+}
+
+impl<G: GraphLike> RewriteableGraph for G {
+    fn apply<P: GraphLike>(&mut self, rewrite: &Rewrite<P>) {
+        // 1. Remove LHS internal vertices
+        for &v in rewrite.lhs_internal.iter() {
+            self.remove_vertex(v);
+        }
+        // 2. Add RHS internal vertices
+        // 3. Add edges of rhs, mapping rhs boundary to lhs boundary
     }
 }
