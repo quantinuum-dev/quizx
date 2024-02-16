@@ -28,6 +28,13 @@ use std::collections::{BTreeMap, HashMap};
 impl JsonGraph {
     /// Encode a graph using the json representation.
     pub fn from_graph(graph: &impl GraphLike, ignore_scalar: bool) -> Self {
+        Self::from_graph_with_map(graph, ignore_scalar).0
+    }
+
+    pub fn from_graph_with_map(
+        graph: &impl GraphLike,
+        ignore_scalar: bool,
+    ) -> (Self, HashMap<V, VertexName>) {
         let mut wire_vertices = HashMap::new();
         let mut node_vertices = HashMap::new();
         let mut undir_edges = HashMap::new();
@@ -143,17 +150,22 @@ impl JsonGraph {
             unimplemented!("Encoding scalars is not yet supported. Use ignore_scalar=true.");
         }
 
-        Self {
-            wire_vertices,
-            node_vertices,
-            undir_edges,
-            variable_types: Default::default(),
-            scalar: None,
-        }
+        (
+            Self {
+                wire_vertices,
+                node_vertices,
+                undir_edges,
+                variable_types: Default::default(),
+                scalar: None,
+            },
+            v_names,
+        )
     }
 
     /// Decode a graph from the json representation.
-    pub fn to_graph<G: GraphLike>(&self, ignore_scalar: bool) -> G {
+    ///
+    /// In addition to the graph, returns a map from serialized vertex names to the vertices in the graph.
+    pub fn to_graph<G: GraphLike>(&self, ignore_scalar: bool) -> (G, HashMap<VertexName, V>) {
         let mut graph = G::new();
 
         if !self.variable_types.is_empty() {
@@ -172,7 +184,10 @@ impl JsonGraph {
 
         for (name, attrs) in &self.node_vertices {
             let coord = Coord::from_f64(attrs.annotation.coord);
-            if attrs.data.typ == VType::H && attrs.data.is_edge {
+            // TODO: weird bug where the `is_edge` value flips during serialization
+            // We don't support Hadamard vertices anyway, so get rid of them here
+            // if attrs.data.typ == VType::H && attrs.data.is_edge {
+            if attrs.data.typ == VType::H {
                 // A virtual hadamard edge.
                 hadamards.insert(name, (vec![], coord));
                 continue;
@@ -258,7 +273,7 @@ impl JsonGraph {
             graph.add_edge_smart(src, tgt, EType::H);
         }
 
-        graph
+        (graph, names)
     }
 }
 

@@ -19,8 +19,7 @@
 mod graph;
 mod phase;
 
-use crate::graph::VType;
-use crate::hash_graph::{EType, GraphLike};
+use crate::graph::{EType, GraphLike, VType};
 
 use serde::{de, Deserialize, Serialize};
 use std::collections::HashMap;
@@ -50,7 +49,7 @@ pub fn write_graph(
 /// Reads a graph from its json-encoded representation.
 pub fn decode_graph<G: GraphLike>(s: &str) -> serde_json::Result<G> {
     let jg: JsonGraph = serde_json::from_str(s)?;
-    Ok(jg.to_graph(true))
+    Ok(jg.to_graph(true).0)
 }
 
 /// Reads a graph from a json-encoded file.
@@ -58,11 +57,11 @@ pub fn read_graph<G: GraphLike>(filename: &Path) -> serde_json::Result<G> {
     let file = std::fs::File::open(filename).unwrap();
     let reader = std::io::BufReader::new(file);
     let jg: JsonGraph = serde_json::from_reader(reader)?;
-    Ok(jg.to_graph(true))
+    Ok(jg.to_graph(true).0)
 }
 
 /// Identifier for an encoded vertex.
-type VertexName = String;
+pub type VertexName = String;
 /// Identifier for an encoded edge.
 type EdgeName = String;
 
@@ -205,12 +204,12 @@ fn deserialize_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
 where
     D: de::Deserializer<'de>,
 {
-    let s: &str = de::Deserialize::deserialize(deserializer)?;
+    let s: String = de::Deserialize::deserialize(deserializer)?;
 
-    match s {
+    match s.as_str() {
         "true" => Ok(true),
         "false" => Ok(false),
-        _ => Err(de::Error::unknown_variant(s, &["true", "false"])),
+        _ => Err(de::Error::unknown_variant(&s, &["true", "false"])),
     }
 }
 
@@ -253,11 +252,26 @@ mod test {
         (g, vs)
     }
 
+    #[fixture]
+    fn hadamard_edge() -> (Graph, Vec<V>) {
+        let mut g = Graph::new();
+        let vs = vec![
+            g.add_vertex(VType::B),
+            g.add_vertex(VType::Z),
+            g.add_vertex(VType::Z),
+        ];
+        g.add_edge_with_type(vs[1], vs[2], EType::H);
+        g.remove_vertex(vs[0]);
+        (g, vs)
+    }
+
     const TEST_JSON: &str = include_str!("../../test_files/simple-graph.json");
 
     #[rstest]
-    fn json_roundtrip(simple_graph: (Graph, Vec<V>)) {
-        let (g, _) = simple_graph;
+    #[case::simple_graph(simple_graph())]
+    #[case::hadamard(hadamard_edge())]
+    fn json_roundtrip(#[case] graph: (Graph, Vec<V>)) {
+        let (g, _) = graph;
         let jg = JsonGraph::from_graph(&g, true);
         let s = serde_json::to_string(&jg).unwrap();
 
