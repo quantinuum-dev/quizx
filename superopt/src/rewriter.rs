@@ -247,7 +247,6 @@ pub(crate) mod test {
         let rewrites = rewriter.get_rewrites(&graph);
 
         println!("Orig cost {graph_cost}");
-        dbg!(&rewrites.len());
         for rw in rewrites {
             let r = rewriter.apply_rewrite(rw, &graph);
             let new_cost = cost_metric.cost(&r.graph);
