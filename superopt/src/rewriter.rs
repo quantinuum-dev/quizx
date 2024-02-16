@@ -56,7 +56,7 @@ pub struct Rewrite<G> {
     /// The replacement graph.
     rhs: G,
     /// The cost delta of the rewrite.
-    /// 
+    ///
     /// Negative delta is an improvement (cost decrease).
     cost_delta: CostDelta,
 }
@@ -67,7 +67,7 @@ impl<G: GraphLike> Rewrite<G> {
     }
 
     /// Whether the rewrite is flow preserving when applied on `graph`.
-    /// 
+    ///
     /// TODO: This can be done faster by pre-computing a "causal structure"
     fn is_flow_preserving(&self, graph: &impl GraphLike, flow: &CausalFlow) -> bool {
         let hull = ConvexHull::from_region(self.lhs_vertices(), flow);
@@ -128,7 +128,8 @@ impl<G: GraphLike> Rewriter for CausalRewriter<G> {
 
     fn get_rewrites(&self, graph: &impl GraphLike) -> Vec<Self::Rewrite> {
         let flow = CausalFlow::from_graph(graph).expect("no causal flow");
-        let mut rewrites = self.matcher
+        let mut rewrites = self
+            .matcher
             .find_matches(graph, &flow)
             .flat_map(|m| {
                 self.get_rhs(m.pattern_id).iter().map(move |rhs| {
@@ -143,7 +144,7 @@ impl<G: GraphLike> Rewriter for CausalRewriter<G> {
                         rhs_boundary,
                         lhs_internal,
                         rhs,
-                        cost_delta
+                        cost_delta,
                     }
                 })
             })
