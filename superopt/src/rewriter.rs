@@ -248,23 +248,12 @@ pub(crate) mod test {
 
         println!("Orig cost {graph_cost}");
         dbg!(&rewrites.len());
-        // let mut i = {
-        //     std::fs::create_dir("rhs").unwrap();
-        //     0
-        // };
         for rw in rewrites {
             let r = rewriter.apply_rewrite(rw, &graph);
             let new_cost = cost_metric.cost(&r.graph);
 
             println!("New cost {new_cost}");
             assert_eq!(graph_cost.saturating_add_signed(r.cost_delta), new_cost);
-
-            // {
-            //     use std::io::Write;
-            //     let mut f = std::fs::File::create(format!("rhs/{i}.dot")).unwrap();
-            //     f.write_all(r.graph.to_dot().as_bytes()).unwrap();
-            //     i += 1;
-            // }
         }
 
         Ok(())
