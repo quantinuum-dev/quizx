@@ -236,3 +236,37 @@ impl<G> PartialEq for Entry<G> {
 }
 
 impl<G> Eq for Entry<G> {}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rewrite_sets::test::rewrite_set_2qb_lc;
+    use crate::rewrite_sets::RewriteSet;
+    use crate::rewriter::test::simple_graph;
+    use crate::rewriter::CausalRewriter;
+
+    use quizx::graph::V;
+    use quizx::vec_graph::Graph;
+    use rstest::rstest;
+
+    #[rstest]
+    fn test_match_apply(
+        rewrite_set_2qb_lc: Vec<RewriteSet<Graph>>,
+        simple_graph: (Graph, Vec<V>),
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (g, _) = simple_graph;
+        let rewriter = CausalRewriter::from_rewrite_rules(rewrite_set_2qb_lc);
+        let optimizer: SuperOptimizer<CausalRewriter<Graph>> = SuperOptimizer::new(rewriter);
+        let options = SuperOptOptions {
+            timeout: Some(5),
+            progress_timeout: Some(1),
+            ..Default::default()
+        };
+
+        let new_g = optimizer.optimize(&g, options);
+
+        assert!(new_g.num_edges() <= g.num_edges());
+
+        Ok(())
+    }
+}

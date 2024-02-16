@@ -162,23 +162,17 @@ impl<G: GraphLike + Clone> CausalRewriter<G> {
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use crate::cost::{CostMetric, TwoQubitGateCount};
+    use crate::rewrite_sets::test::rewrite_set_2qb_lc;
 
     use super::*;
     use quizx::vec_graph::Graph;
     use rstest::{fixture, rstest};
 
-    const TEST_SET: &str = include_str!("../../test_files/rewrites-2qb-lc.json");
-
+    /// Makes a simple graph, with 2 inputs and 2 outputs, and causal flow.
     #[fixture]
-    fn rewrite_set_2qb_lc() -> Vec<RewriteSet<Graph>> {
-        serde_json::from_str(TEST_SET).unwrap()
-    }
-
-    /// Makes a simple graph, with 2 inputs and 2 outputs.
-    #[fixture]
-    fn simple_graph() -> (Graph, Vec<V>) {
+    pub(crate) fn simple_graph() -> (Graph, Vec<V>) {
         let mut g = Graph::new();
         let vs = vec![
             g.add_vertex(VType::B),
