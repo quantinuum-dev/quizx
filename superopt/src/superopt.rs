@@ -242,19 +242,19 @@ mod test {
     use super::*;
     use crate::rewrite_sets::test::rewrite_set_2qb_lc;
     use crate::rewrite_sets::RewriteSet;
-    use crate::rewriter::test::simple_graph;
+    use crate::rewriter::test::{json_simple_graph, small_graph};
     use crate::rewriter::CausalRewriter;
 
-    use quizx::graph::V;
     use quizx::vec_graph::Graph;
     use rstest::rstest;
 
     #[rstest]
-    fn test_match_apply(
+    #[case(small_graph())]
+    #[case(json_simple_graph())]
+    fn run_superopt(
         rewrite_set_2qb_lc: Vec<RewriteSet<Graph>>,
-        simple_graph: (Graph, Vec<V>),
+        #[case] graph: Graph,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (g, _) = simple_graph;
         let rewriter = CausalRewriter::from_rewrite_rules(rewrite_set_2qb_lc);
         let optimizer: SuperOptimizer<CausalRewriter<Graph>> = SuperOptimizer::new(rewriter);
         let options = SuperOptOptions {
@@ -263,9 +263,9 @@ mod test {
             ..Default::default()
         };
 
-        let new_g = optimizer.optimize(&g, options);
+        let new_g = optimizer.optimize(&graph, options);
 
-        assert!(new_g.num_edges() <= g.num_edges());
+        assert!(new_g.num_edges() <= graph.num_edges());
 
         Ok(())
     }

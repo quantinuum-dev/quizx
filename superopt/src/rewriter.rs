@@ -167,12 +167,13 @@ pub(crate) mod test {
     use crate::rewrite_sets::test::rewrite_set_2qb_lc;
 
     use super::*;
+    use quizx::json::decode_graph;
     use quizx::vec_graph::Graph;
     use rstest::{fixture, rstest};
 
     /// Makes a simple graph, with 2 inputs and 2 outputs, and causal flow.
     #[fixture]
-    pub(crate) fn simple_graph() -> (Graph, Vec<V>) {
+    pub(crate) fn small_graph() -> Graph {
         let mut g = Graph::new();
         let vs = vec![
             g.add_vertex(VType::B),
@@ -209,24 +210,44 @@ pub(crate) mod test {
         g.add_edge_with_type(vs[8], vs[10], EType::N);
         g.add_edge_with_type(vs[9], vs[11], EType::N);
 
-        (g, vs)
+        g
+    }
+
+    #[fixture]
+    pub(crate) fn json_simple_graph() -> Graph {
+        const SIMPLE_GRAPH_JSON: &str = include_str!("../../test_files/simple-graph.json");
+        decode_graph(SIMPLE_GRAPH_JSON).unwrap()
+    }
+
+    #[fixture]
+    pub(crate) fn compiled_rewriter() -> CausalRewriter<Graph> {
+        let rw_set = rewrite_set_2qb_lc();
+        CausalRewriter::from_rewrite_rules(rw_set)
+    }
+
+    #[fixture]
+    pub(crate) fn pre_compiled_rewriter() -> CausalRewriter<Graph> {
+        const REWRITE_2QB_LC: &[u8] = include_bytes!("../../test_files/rewrites-2qb-lc.rwr");
+        rmp_serde::from_slice(REWRITE_2QB_LC).unwrap()
     }
 
     #[rstest]
+    #[case::small_compiled(small_graph(), compiled_rewriter())]
+    #[case::json_compiled(json_simple_graph(), compiled_rewriter())]
+    #[case::small_precompiled(small_graph(), pre_compiled_rewriter())]
+    #[case::json_precompiled(json_simple_graph(), pre_compiled_rewriter())]
     fn test_match_apply(
-        rewrite_set_2qb_lc: Vec<RewriteSet<Graph>>,
-        simple_graph: (Graph, Vec<V>),
+        #[case] graph: Graph,
+        #[case] rewriter: CausalRewriter<Graph>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let rewriter = CausalRewriter::from_rewrite_rules(rewrite_set_2qb_lc);
-        let (g, _) = simple_graph;
         let cost_metric = TwoQubitGateCount::new();
-        let graph_cost = cost_metric.cost(&g);
+        let graph_cost = cost_metric.cost(&graph);
 
-        let rewrites = rewriter.get_rewrites(&g);
+        let rewrites = rewriter.get_rewrites(&graph);
 
         println!("Orig cost {graph_cost}");
         for rw in rewrites {
-            let r = rewriter.apply_rewrite(rw, &g);
+            let r = rewriter.apply_rewrite(rw, &graph);
             let new_cost = cost_metric.cost(&r.graph);
 
             println!("New cost {new_cost}");
