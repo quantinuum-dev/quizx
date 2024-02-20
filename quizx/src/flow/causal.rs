@@ -218,7 +218,14 @@ impl ConvexHull {
         let lines: HashSet<_> = region.iter().map(|&v| flow.line_idx(v)).collect();
 
         for &v in &region {
-            add_to_hull(v, graph, &mut line_min_max, flow, &lines, None);
+            add_to_hull(
+                v,
+                graph,
+                &mut line_min_max,
+                flow,
+                &lines,
+                &mut HashSet::new(),
+            );
         }
 
         let mut hull_vertices = HashSet::new();
@@ -292,13 +299,12 @@ fn add_to_hull(
     hull_intervals: &mut Vec<Option<RangeInclusive<usize>>>,
     flow: &CausalFlow,
     lines: &HashSet<usize>,
-    exclude_vertices: Option<HashSet<V>>,
+    exclude_vertices: &mut HashSet<V>,
 ) {
     let p = flow.positions[v];
     let line_v = p.line;
     // A set of vertices to be excluded from consideration, as they are being
     // processed higher up the call stack (to avoid infinite recursion).
-    let mut exclude_vertices = exclude_vertices.unwrap_or_default();
     if !exclude_vertices.insert(v) {
         return;
     }
@@ -306,24 +312,10 @@ fn add_to_hull(
         // Fill the interval between p.pos and old interval
         if p.pos + 1 < *interval.start() {
             let next_v = flow.next(v).expect("start is in future and exists");
-            add_to_hull(
-                next_v,
-                graph,
-                hull_intervals,
-                flow,
-                lines,
-                exclude_vertices.clone().into(),
-            );
+            add_to_hull(next_v, graph, hull_intervals, flow, lines, exclude_vertices);
         } else if p.pos - 1 > *interval.end() {
             let prev_v = flow.pred(v).expect("end is in past and exists");
-            add_to_hull(
-                prev_v,
-                graph,
-                hull_intervals,
-                flow,
-                lines,
-                exclude_vertices.clone().into(),
-            );
+            add_to_hull(prev_v, graph, hull_intervals, flow, lines, exclude_vertices);
         }
         // Add neighbours to convex hull
         if p.pos < *interval.start() {
@@ -333,14 +325,7 @@ fn add_to_hull(
             for n in graph.neighbors(next_v) {
                 let line_n = flow.line_idx(n);
                 if lines.contains(&line_n) && line_n != line_v {
-                    add_to_hull(
-                        n,
-                        graph,
-                        hull_intervals,
-                        flow,
-                        lines,
-                        exclude_vertices.clone().into(),
-                    );
+                    add_to_hull(n, graph, hull_intervals, flow, lines, exclude_vertices);
                 }
             }
         } else if p.pos > *interval.end() {
@@ -349,14 +334,7 @@ fn add_to_hull(
             for n in graph.neighbors(v) {
                 let line_n = flow.line_idx(n);
                 if lines.contains(&line_n) && line_n != line_v {
-                    add_to_hull(
-                        n,
-                        graph,
-                        hull_intervals,
-                        flow,
-                        lines,
-                        exclude_vertices.clone().into(),
-                    );
+                    add_to_hull(n, graph, hull_intervals, flow, lines, exclude_vertices);
                 }
             }
         }

@@ -10,7 +10,7 @@ use quizx::basic_rules::unfuse_boundary;
 use quizx::circuit::Circuit;
 use quizx::graph::GraphLike;
 use quizx::json::{read_graph, write_graph};
-use quizx::simplify::{clifford_simp, flow_simp, spider_simp};
+use quizx::simplify::flow_simp;
 use quizx::vec_graph::Graph;
 use quizx_superopt::rewrite_sets::RewriteSet;
 use quizx_superopt::rewriter::CausalRewriter;
