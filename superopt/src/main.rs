@@ -5,10 +5,10 @@ use std::time::Instant;
 
 use clap::Parser;
 use quizx::circuit::Circuit;
-use quizx::json::{read_graph, write_graph};
-use quizx::vec_graph::Graph;
 use quizx::graph::GraphLike;
+use quizx::json::{read_graph, write_graph};
 use quizx::simplify::spider_simp;
+use quizx::vec_graph::Graph;
 use quizx_superopt::rewriter::CausalRewriter;
 use quizx_superopt::superopt::{SuperOptOptions, SuperOptimizer};
 
@@ -83,8 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         graph = circ.to_basic_gates().to_graph();
         graph.x_to_z();
         spider_simp(&mut graph);
-    }
-    else {
+    } else {
         graph = read_graph(&args.input).unwrap_or_else(|e| {
             panic!(
                 "Could not read input graph {}.\n{e}",

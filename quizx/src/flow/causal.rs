@@ -26,7 +26,7 @@
 //! 4. If `v ~ f(u)`, then `u ≼ v`
 
 use std::collections::HashSet;
-use std::ops::Range;
+use std::ops::RangeInclusive;
 
 use itertools::Itertools;
 
@@ -202,19 +202,30 @@ pub struct ConvexHull {
 
 impl ConvexHull {
     /// Constructs the convex hull of a region given the graph's causal flow.
-    pub fn from_region<'a>(region: impl IntoIterator<Item = &'a V>, flow: &CausalFlow) -> Self {
+    pub fn from_region<'a>(
+        region: impl IntoIterator<Item = &'a V>,
+        graph: &impl GraphLike,
+        flow: &CausalFlow,
+    ) -> Self {
         let flow_lines = flow.lines();
 
         // For each flow line, the first and last vertices that are part of the region.
-        let mut line_min_max: Vec<Option<Range<usize>>> = vec![None; flow_lines.len()];
+        let mut line_min_max: Vec<Option<RangeInclusive<usize>>> = vec![None; flow_lines.len()];
 
         let region: HashSet<V> = region.into_iter().copied().collect();
 
+        // The lines that the region touches.
+        let lines: HashSet<_> = region.iter().map(|&v| flow.line_idx(v)).collect();
+
         for &v in &region {
-            let p = flow.positions[v];
-            let min_max = line_min_max[p.line].get_or_insert_with(|| p.pos..p.pos);
-            min_max.start = min_max.start.min(p.pos);
-            min_max.end = min_max.end.max(p.pos);
+            add_to_hull(
+                v,
+                graph,
+                &mut line_min_max,
+                flow,
+                &lines,
+                &mut HashSet::new(),
+            );
         }
 
         let mut hull_vertices = HashSet::new();
@@ -223,8 +234,8 @@ impl ConvexHull {
         for (line, min_max) in line_min_max.iter().enumerate() {
             if let Some(range) = min_max {
                 let line = &flow_lines[line];
-                inputs.push(line[range.start]);
-                outputs.push(line[range.end - 1]);
+                inputs.push(line[*range.start()]);
+                outputs.push(line[*range.end()]);
                 for v in line[range.clone()].iter().copied() {
                     if !region.contains(&v) {
                         hull_vertices.insert(v);
@@ -271,6 +282,70 @@ pub enum CausalFlowError {
     NonCausal,
 }
 
+/// Add vertex `v` along with further vertices as required so that the hull
+/// remains convex.
+///
+/// Rules for adding vertices:
+///  - if `v` is in the past of the current hull:
+///     1. add vertices from v to the beginning of the hull along the causal path
+///     2. add non-causal neighbours of the successor of `v`
+///  - if `v` is in the future of the current hull:
+///     1. add vertices from the end of the hull to `v` along the causal path
+///     2. add non-causal neighbours of `v`
+/// These rules must be applied recursively
+fn add_to_hull(
+    v: V,
+    graph: &impl GraphLike,
+    hull_intervals: &mut Vec<Option<RangeInclusive<usize>>>,
+    flow: &CausalFlow,
+    lines: &HashSet<usize>,
+    exclude_vertices: &mut HashSet<V>,
+) {
+    let p = flow.positions[v];
+    let line_v = p.line;
+    // A set of vertices to be excluded from consideration, as they are being
+    // processed higher up the call stack (to avoid infinite recursion).
+    if !exclude_vertices.insert(v) {
+        return;
+    }
+    if let Some(interval) = hull_intervals[line_v].as_ref().cloned() {
+        // Fill the interval between p.pos and old interval
+        if p.pos + 1 < *interval.start() {
+            let next_v = flow.next(v).expect("start is in future and exists");
+            add_to_hull(next_v, graph, hull_intervals, flow, lines, exclude_vertices);
+        } else if p.pos - 1 > *interval.end() {
+            let prev_v = flow.pred(v).expect("end is in past and exists");
+            add_to_hull(prev_v, graph, hull_intervals, flow, lines, exclude_vertices);
+        }
+        // Add neighbours to convex hull
+        if p.pos < *interval.start() {
+            // Add the non-causal neighbours of the next vertex that are on
+            // lines of the region
+            let next_v = flow.next(v).expect("start is in future and exists");
+            for n in graph.neighbors(next_v) {
+                let line_n = flow.line_idx(n);
+                if lines.contains(&line_n) && line_n != line_v {
+                    add_to_hull(n, graph, hull_intervals, flow, lines, exclude_vertices);
+                }
+            }
+        } else if p.pos > *interval.end() {
+            // Add the non-causal neighbours of the current vertex that are on
+            // lines of the region
+            for n in graph.neighbors(v) {
+                let line_n = flow.line_idx(n);
+                if lines.contains(&line_n) && line_n != line_v {
+                    add_to_hull(n, graph, hull_intervals, flow, lines, exclude_vertices);
+                }
+            }
+        }
+        let start = (*interval.start()).min(p.pos);
+        let end = (*interval.end()).max(p.pos);
+        hull_intervals[line_v] = Some(start..=end);
+    } else {
+        hull_intervals[line_v] = Some(p.pos..=p.pos);
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -311,6 +386,7 @@ mod test {
         g.add_edge(vs[2], vs[4]);
         g.add_edge(vs[2], vs[3]);
         g.add_edge(vs[3], vs[5]);
+        g.add_edge(vs[4], vs[5]);
         g.add_edge(vs[4], vs[6]);
         g.add_edge(vs[5], vs[7]);
         (g, vs)
@@ -336,9 +412,51 @@ mod test {
         let flow = CausalFlow::from_graph(&g).unwrap();
 
         let region = vec![vs[0], vs[3], vs[6], vs[4]];
-        let expected_other = [vs[2]];
+        let expected_other = [vs[2], vs[5]];
 
-        let hull = ConvexHull::from_region(&region, &flow);
+        let hull = ConvexHull::from_region(&region, &g, &flow);
+
+        assert_eq!(hull.region, region.iter().copied().collect());
+        assert_eq!(hull.hull_vertices, expected_other.iter().copied().collect());
+    }
+
+    #[rstest]
+    fn convex_hull2(simple_graph: (Graph, Vec<V>)) {
+        let (g, vs) = simple_graph;
+        let flow = CausalFlow::from_graph(&g).unwrap();
+
+        let region = vec![vs[2], vs[3], vs[5]];
+        let expected_other = [vs[4]];
+
+        let hull = ConvexHull::from_region(&region, &g, &flow);
+
+        assert_eq!(hull.region, region.iter().copied().collect());
+        assert_eq!(hull.hull_vertices, expected_other.iter().copied().collect());
+    }
+
+    #[rstest]
+    fn convex_hull3(simple_graph: (Graph, Vec<V>)) {
+        let (g, vs) = simple_graph;
+        let flow = CausalFlow::from_graph(&g).unwrap();
+
+        let region = vec![vs[2], vs[3], vs[5], vs[7]];
+        let expected_other = [vs[4]];
+
+        let hull = ConvexHull::from_region(&region, &g, &flow);
+
+        assert_eq!(hull.region, region.iter().copied().collect());
+        assert_eq!(hull.hull_vertices, expected_other.iter().copied().collect());
+    }
+
+    #[rstest]
+    fn convex_hull4(simple_graph: (Graph, Vec<V>)) {
+        let (g, vs) = simple_graph;
+        let flow = CausalFlow::from_graph(&g).unwrap();
+
+        let region = vec![vs[2], vs[4], vs[5]];
+        let expected_other = [];
+
+        let hull = ConvexHull::from_region(&region, &g, &flow);
 
         assert_eq!(hull.region, region.iter().copied().collect());
         assert_eq!(hull.hull_vertices, expected_other.iter().copied().collect());
