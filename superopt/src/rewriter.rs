@@ -70,7 +70,7 @@ impl<G: GraphLike> Rewrite<G> {
     ///
     /// TODO: This can be done faster by pre-computing a "causal structure"
     fn is_flow_preserving(&self, graph: &impl GraphLike, flow: &CausalFlow) -> bool {
-        let hull = ConvexHull::from_region(self.lhs_vertices(), flow);
+        let hull = ConvexHull::from_region(self.lhs_vertices(), graph, flow);
         let mut subgraph = graph.induced_subgraph(hull.vertices());
         subgraph.set_inputs(hull.inputs().to_owned());
         subgraph.set_outputs(hull.outputs().to_owned());
