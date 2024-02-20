@@ -32,6 +32,7 @@ use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use priority_queue::DoublePriorityQueue;
+use quizx::flow::causal::CausalFlow;
 use quizx::graph::GraphLike;
 use rustc_hash::FxHashSet;
 
@@ -145,11 +146,17 @@ where
             // - We haven't seen yet.
             for rw in rewrites {
                 let r = self.rewriter.apply_rewrite(rw, &g);
-                let new_g_cost = cost.saturating_add_signed(r.cost_delta);
+                // TODO: sometimes "adding" a boundary edges removes it, which
+                // can reduce cost in unexpected ways.
+                // let new_g_cost = cost.saturating_add_signed(r.cost_delta);
+                let new_g_cost = TwoQubitGateCount::new().cost(&r.graph);
+
+                // Detect if something has gone wrong
+                CausalFlow::from_graph(&g).unwrap();
 
                 // Skip rewrites that have a worse cost than the last candidate in the priority queue.
                 let max_cost = pq.peek_max().map(|(_, c)| *c).unwrap_or(usize::MAX);
-                if new_g_cost < max_cost {
+                if new_g_cost > max_cost {
                     continue;
                 }
 

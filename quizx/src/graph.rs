@@ -805,7 +805,11 @@ pub trait GraphLike: Clone + Sized + Send + Sync + std::fmt::Debug {
         comps
     }
 
-    fn induced_subgraph(&self, vertices: impl IntoIterator<Item = V>) -> Self {
+    /// A graph with only the vertices in the given set
+    ///
+    /// The vertices are re-indexed to be consecutive. The returned map maps the
+    /// old vertex indices to the new ones.
+    fn induced_subgraph(&self, vertices: impl IntoIterator<Item = V>) -> (Self, FxHashMap<V, V>) {
         let vset: FxHashSet<V> = vertices.into_iter().collect();
         let mut vmap: FxHashMap<V, V> = FxHashMap::default();
 
@@ -813,19 +817,16 @@ pub trait GraphLike: Clone + Sized + Send + Sync + std::fmt::Debug {
 
         for &v in vset.iter() {
             vmap.insert(v, subgraph.add_vertex(self.vertex_type(v)));
+            subgraph.set_phase(vmap[&v], self.phase(v));
+            subgraph.set_coord(vmap[&v], self.coord(v));
+            subgraph.set_qubit(vmap[&v], self.qubit(v));
+            subgraph.set_row(vmap[&v], self.row(v));
         }
 
-        for &v in vset.iter() {
-            for w in self.neighbors(v).filter(|w| vset.contains(w)) {
-                subgraph.add_edge_with_type(vmap[&v], vmap[&w], self.edge_type(v, w));
+        for (u, v, etype) in self.edges() {
+            if vset.contains(&u) && vset.contains(&v) {
+                subgraph.add_edge_with_type(vmap[&u], vmap[&v], etype);
             }
-        }
-
-        for v in vset.iter() {
-            subgraph.set_phase(vmap[&v], self.phase(*v));
-            subgraph.set_coord(vmap[&v], self.coord(*v));
-            subgraph.set_qubit(vmap[&v], self.qubit(*v));
-            subgraph.set_row(vmap[&v], self.row(*v));
         }
 
         let inputs: Vec<_> = self
@@ -844,7 +845,7 @@ pub trait GraphLike: Clone + Sized + Send + Sync + std::fmt::Debug {
         subgraph.set_inputs(inputs);
         subgraph.set_outputs(outputs);
 
-        subgraph
+        (subgraph, vmap)
     }
 }
 

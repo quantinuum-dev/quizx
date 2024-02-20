@@ -151,7 +151,12 @@ fn edge_predicate<'g>(
     }
 }
 
-// TODO: currently not checking anything for vertices
 fn vertex_predicate(graph: &impl GraphLike) -> impl for<'a> Fn(V, &'a PNode) -> bool + '_ {
-    move |v, vtype| graph.vertex_type(v) == *vtype
+    move |v, pnode| {
+        let graph_v_type = graph.vertex_type(v);
+        match *pnode {
+            PNode::Boundary { v_type } => v_type == graph_v_type,
+            PNode::Internal { arity, v_type } => v_type == graph_v_type && graph.degree(v) == arity,
+        }
+    }
 }

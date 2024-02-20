@@ -28,8 +28,17 @@ pub use portmatching::PatternID;
 use crate::graph::{EType, VType};
 use portmatching::EdgeProperty;
 
-// TODO: choose correct types
-type PNode = VType;
+/// A vertex property
+#[derive(
+    serde::Serialize, serde::Deserialize, Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+enum PNode {
+    /// Boundary vertices, we match the vertex type only.
+    Boundary { v_type: VType },
+    /// Internal vertices, we match the vertex type but also the vertex
+    /// degree, as all incident edges must be within the pattern.
+    Internal { arity: usize, v_type: VType },
+}
 
 /// An edge to be matched in a causal graph
 #[derive(

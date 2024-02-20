@@ -4,12 +4,12 @@
 //! See https://github.com/CQCL-DEV/zx-causal-flow-rewrites for a generator of
 //! these sets.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use itertools::Itertools;
 use quizx::json::{JsonGraph, VertexName};
-use quizx::vec_graph::{GraphLike, V};
+use quizx::vec_graph::{GraphLike, VType, V};
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Reads a graph from a json-encoded list of rewrite rule sets.
@@ -175,6 +175,19 @@ pub trait RuleSide<G: GraphLike> {
             .map(|&v| unique_neighbour(g, v))
     }
 
+    /// The internal vertices of the graph in the LHS/RHS sense.
+    ///
+    /// These are vertices that are neither of type Boundary nor in boundary()
+    fn internal<'a>(&'a self) -> impl Iterator<Item = V> + 'a
+    where
+        G: 'a,
+    {
+        let g = &self.decoded_graph().g;
+        let boundary: HashSet<_> = self.boundary().collect();
+        g.vertices()
+            .filter(move |&v| g.vertex_type(v) != VType::B && !boundary.contains(&v))
+    }
+
     /// The input/output assignments of the boundary nodes, translated to the graph indices.
     fn ios(&self) -> impl Iterator<Item = (Vec<V>, Vec<V>)> + '_ {
         self.decoded_ios()
@@ -257,5 +270,64 @@ pub(crate) mod test {
                 assert_eq!(lhs.boundary().count(), rhs.boundary().count());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_matcher {
+    use std::{
+        collections::HashSet,
+        fs::{self, File},
+        io::BufReader,
+    };
+
+    use itertools::Itertools;
+    use quizx::{
+        basic_rules::unfuse_boundary,
+        circuit::Circuit,
+        flow::causal::CausalFlow,
+        portmatching::{CausalMatcher, CausalPattern},
+        simplify::{flow_simp, spider_simp},
+        vec_graph::{Graph, GraphLike},
+    };
+
+    use super::{RewriteSet, RuleSide};
+
+    #[test]
+    fn test_matcher() -> Result<(), Box<dyn std::error::Error>> {
+        let reader = BufReader::new(File::open("rules/rules.json")?);
+        let rewrite_rules: Vec<RewriteSet<Graph>> = serde_json::from_reader(reader)?;
+
+        let mut patterns = Vec::new();
+        for rw_set in rewrite_rules {
+            let boundary = rw_set.lhs().boundary().collect_vec();
+            for (inputs, outputs) in rw_set.lhs().ios() {
+                let p = rw_set.lhs().graph();
+                let inputs = HashSet::from_iter(inputs);
+                let outputs = HashSet::from_iter(outputs);
+                patterns.push(CausalPattern::new(p, boundary.clone(), inputs, outputs));
+            }
+        }
+        let matcher = CausalMatcher::from_patterns(patterns);
+
+        let circ = Circuit::from_file("simple.qasm")?;
+        let mut graph: Graph = circ.to_basic_gates().to_graph();
+        graph.x_to_z();
+        flow_simp(&mut graph);
+        let io = graph
+            .inputs()
+            .iter()
+            .chain(graph.outputs())
+            .copied()
+            .collect_vec();
+        for b in io {
+            let v = graph.neighbors(b).exactly_one().ok().unwrap();
+            unfuse_boundary(&mut graph, v, b);
+        }
+
+        let flow = CausalFlow::from_graph(&graph)?;
+        let res = matcher.find_matches(&graph, &flow).collect_vec();
+        assert_eq!(res.len(), 64);
+        Ok(())
     }
 }
