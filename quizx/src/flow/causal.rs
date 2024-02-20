@@ -331,7 +331,6 @@ fn add_to_hull(
             // lines of the region
             let next_v = flow.next(v).expect("start is in future and exists");
             for n in graph.neighbors(next_v) {
-                dbg!(n);
                 let line_n = flow.line_idx(n);
                 if lines.contains(&line_n) && line_n != line_v {
                     add_to_hull(
@@ -349,7 +348,6 @@ fn add_to_hull(
             // lines of the region
             for n in graph.neighbors(v) {
                 let line_n = flow.line_idx(n);
-                dbg!(n);
                 if lines.contains(&line_n) && line_n != line_v {
                     add_to_hull(
                         n,
