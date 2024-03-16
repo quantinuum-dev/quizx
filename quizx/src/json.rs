@@ -132,7 +132,6 @@ struct VertexAnnotations {
     #[serde(default)]
     boundary: bool,
     /// Coordinates of the vertex, for rendering purposes.
-    #[serde(skip_serializing_if = "is_default")]
     #[serde(default)]
     coord: (f64, f64),
     /// The input number for the vertex.
