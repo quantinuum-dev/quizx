@@ -361,7 +361,7 @@ checked_rule2!(check_pivot, pivot_unchecked, pivot);
 ///
 /// If b is not a boundary, this is a noop. The new vertex will be connected
 /// to v by a Hadamard edge.
-fn unfuse_boundary(g: &mut impl GraphLike, v: V, b: V) {
+pub fn unfuse_boundary(g: &mut impl GraphLike, v: V, b: V) {
     if g.vertex_type(b) != VType::B {
         return;
     }

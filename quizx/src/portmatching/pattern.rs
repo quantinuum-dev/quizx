@@ -84,6 +84,7 @@ impl<G: GraphLike> CausalPattern<G> {
     /// A valid order is one where the source of each edge is already known
     /// (the source of the first edge is considered the root).
     pub(super) fn edges(&self) -> Vec<Edge<V, PNode, PEdge>> {
+        let pnodes = self.vertex_properties();
         self.to_lines()
             .iter()
             .flat_map(|(_, vec)| vec)
@@ -91,35 +92,86 @@ impl<G: GraphLike> CausalPattern<G> {
                 source: Some(src),
                 target: Some(dst),
                 edge_prop: etype,
-                source_prop: Some(self.graph.vertex_type(src)),
-                target_prop: Some(self.graph.vertex_type(dst)),
+                source_prop: pnodes[src],
+                target_prop: pnodes[dst],
             })
             .collect()
     }
 
+    /// The root of the pattern.
+    ///
+    /// Currently it is the first internal vertex on the root line, if there is
+    /// one, or the first vertex otherwise.
     pub fn root(&self) -> V {
-        self.flow.lines()[self.root_line()][0]
+        let internal: HashSet<_> = self.internal().collect();
+        let root_line = &self.flow.lines()[self.root_line()];
+        let first_internal = root_line.iter().copied().find(|v| internal.contains(v));
+        if let Some(first_internal) = first_internal {
+            first_internal
+        } else {
+            root_line[0]
+        }
     }
 
+    /// The pattern graph.
+    pub fn graph(&self) -> &G {
+        &self.graph
+    }
+
+    /// The first line to be matched.
+    ///
+    /// Currently this is the first line with an internal vertex, if there is one.
+    /// Otherwise it is the first non-empty line.
+    /// May change in the future.
+    ///
+    /// Panics if the pattern is empty.
     fn root_line(&self) -> usize {
-        self.flow
+        let internal: HashSet<_> = self.internal().collect();
+        let first_internal = self
+            .flow
             .lines()
             .iter()
-            .position(|line| !line.is_empty())
-            .expect("empty pattern")
+            .position(|line| line.iter().any(|&v| internal.contains(&v)));
+        if let Some(first_internal) = first_internal {
+            first_internal
+        } else {
+            self.flow
+                .lines()
+                .iter()
+                .position(|line| !line.is_empty())
+                .expect("Empty pattern")
+        }
+    }
+
+    fn vertex_properties(&self) -> Vec<Option<PNode>> {
+        let Some(max_v) = self.graph.vertices().max() else {
+            return Vec::new();
+        };
+        let mut pnodes = vec![None; max_v + 1];
+        let boundary: HashSet<_> = self.boundary().collect();
+        for v in self.graph.vertices() {
+            let v_type = self.graph.vertex_type(v);
+            if boundary.contains(&v) {
+                pnodes[v] = Some(PNode::Boundary { v_type });
+            } else {
+                let arity = self.graph.degree(v);
+                pnodes[v] = Some(PNode::Internal { v_type, arity });
+            }
+        }
+        pnodes
     }
 
     /// The vertices are partitioned into boundary and internal vertices.
     ///
     /// Returns an iterator over the boundary vertices.
-    pub(super) fn boundary(&self) -> impl Iterator<Item = V> + ExactSizeIterator + '_ {
+    pub fn boundary(&self) -> impl Iterator<Item = V> + ExactSizeIterator + '_ {
         self.boundary.iter().copied()
     }
 
     /// The vertices are partitioned into boundary and internal vertices.
     ///
     /// Returns an iterator over the internal vertices.
-    pub(super) fn internal(&self) -> impl Iterator<Item = V> + '_ {
+    pub fn internal(&self) -> impl Iterator<Item = V> + '_ {
         let boundary: HashSet<_> = self.boundary().collect();
         self.graph
             .vertices()
@@ -130,10 +182,12 @@ impl<G: GraphLike> CausalPattern<G> {
     ///
     /// Line patterns are used by `portmatching` to build matcher automata.
     pub(super) fn to_line_pattern(&self) -> LinePattern<V, PNode, PEdge> {
+        let pnodes = self.vertex_properties();
+
         let mut lp = LinePattern::new();
         // Add all vertices
         for v in self.graph.vertices() {
-            lp.require(v, self.graph.vertex_type(v));
+            lp.require(v, pnodes[v].unwrap());
         }
 
         // Add all edges as lines

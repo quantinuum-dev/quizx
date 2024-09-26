@@ -4,13 +4,18 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use clap::Parser;
+use itertools::Itertools;
+use log::Level;
+use quizx::basic_rules::unfuse_boundary;
 use quizx::circuit::Circuit;
 use quizx::graph::GraphLike;
 use quizx::json::{read_graph, write_graph};
-use quizx::simplify::spider_simp;
+use quizx::simplify::flow_simp;
 use quizx::vec_graph::Graph;
+use quizx_superopt::rewrite_sets::RewriteSet;
 use quizx_superopt::rewriter::CausalRewriter;
 use quizx_superopt::superopt::{SuperOptOptions, SuperOptimizer};
+use simple_logger::SimpleLogger;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -68,6 +73,11 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start_time = Instant::now();
 
+    SimpleLogger::new()
+        .with_level(Level::Info.to_level_filter())
+        .init()
+        .unwrap();
+
     // Parse command line arguments
     let args = Args::parse();
 
@@ -82,7 +92,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
         graph = circ.to_basic_gates().to_graph();
         graph.x_to_z();
-        spider_simp(&mut graph);
+        flow_simp(&mut graph);
+        let io = graph
+            .inputs()
+            .iter()
+            .chain(graph.outputs())
+            .copied()
+            .collect_vec();
+        for b in io {
+            let v = graph.neighbors(b).exactly_one().ok().unwrap();
+            unfuse_boundary(&mut graph, v, b);
+        }
     } else {
         graph = read_graph(&args.input).unwrap_or_else(|e| {
             panic!(
@@ -95,12 +115,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Loading rewrite set...");
     let f = File::open(&args.rewriter)?;
     let reader = BufReader::new(f);
-    let rewriter: CausalRewriter<Graph> = rmp_serde::from_read(reader).unwrap_or_else(|e| {
-        panic!(
-            "Could not read compiled rewriter from {}.\n{e}",
-            args.rewriter.to_str().unwrap()
-        )
-    });
+    // let rewriter: CausalRewriter<Graph> = rmp_serde::from_read(reader).unwrap_or_else(|e| {
+    //     panic!(
+    //         "Could not read compiled rewriter from {}.\n{e}",
+    //         args.rewriter.to_str().unwrap()
+    //     )
+    // });
+    let rewrite_rules: Vec<RewriteSet<Graph>> = serde_json::from_reader(reader)?;
+    let rewriter = CausalRewriter::from_rewrite_rules(rewrite_rules);
 
     println!("Running the optimizer...");
     let optimizer: SuperOptimizer<CausalRewriter<Graph>> = SuperOptimizer::new(rewriter);
@@ -113,6 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Writing result...");
     write_graph(&result, true, &args.output)?;
+    std::fs::write(args.output.with_extension("dot"), result.to_dot())?;
 
     // Print the file size of output_file in megabytes
     let elapsed = start_time.elapsed();

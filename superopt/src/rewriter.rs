@@ -1,6 +1,7 @@
 //! Rewriter for the SuperOptimizer.
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Index;
 
 use itertools::Itertools;
 use quizx::vec_graph::{EType, VType};
@@ -42,26 +43,28 @@ struct RhsIdx(usize);
 pub struct CausalRewriter<G: GraphLike> {
     matcher: CausalMatcher<G>,
     lhs_to_rhs: HashMap<PatternID, RhsIdx>,
-    all_rhs: Vec<Vec<RewriteRhs<G>>>,
+    all_rhs: Vec<Vec<CausalRewriterRHS>>,
 }
 
 #[derive(Clone, Debug)]
-pub struct Rewrite<G> {
+pub struct Rewrite {
     /// The nodes matching the LHS boundary in the matched graph.
     lhs_boundary: Vec<V>,
-    /// The nodes matching the RHS boundary in `rhs`.
-    rhs_boundary: Vec<V>,
     /// The internal nodes of the LHS in the matched graph.
     lhs_internal: HashSet<V>,
-    /// The replacement graph.
-    rhs: G,
+    /// Number of new internal nodes in the RHS.
+    rhs_n_internal: usize,
+    /// Edges to add to the graph.
+    rhs_new_edges: Vec<(RHSVertex, RHSVertex)>,
     /// The cost delta of the rewrite.
     ///
     /// Negative delta is an improvement (cost decrease).
     cost_delta: CostDelta,
+    /// The pattern ID of the matched LHS
+    pattern_id: PatternID,
 }
 
-impl<G: GraphLike> Rewrite<G> {
+impl Rewrite {
     fn lhs_vertices(&self) -> impl Iterator<Item = &V> + '_ {
         self.lhs_boundary.iter().chain(&self.lhs_internal)
     }
@@ -71,52 +74,55 @@ impl<G: GraphLike> Rewrite<G> {
     /// TODO: This can be done faster by pre-computing a "causal structure"
     fn is_flow_preserving(&self, graph: &impl GraphLike, flow: &CausalFlow) -> bool {
         let hull = ConvexHull::from_region(self.lhs_vertices(), graph, flow);
-        let mut subgraph = graph.induced_subgraph(hull.vertices());
-        subgraph.set_inputs(hull.inputs().to_owned());
-        subgraph.set_outputs(hull.outputs().to_owned());
-        self.apply(&mut subgraph);
+        let (mut subgraph, vmap) = graph.induced_subgraph(hull.vertices());
+        subgraph.set_inputs(hull.inputs().iter().map(|v| vmap[v]).collect());
+        subgraph.set_outputs(hull.outputs().iter().map(|v| vmap[v]).collect());
+        let subgraph_rw = self.map_lhs(&vmap);
+        subgraph_rw.apply(&mut subgraph);
         CausalFlow::from_graph(&subgraph).is_ok()
     }
 
-    fn apply<H: GraphLike>(&self, g: &mut H) -> CostDelta {
-        let mut new_r_names: HashMap<V, V> = HashMap::new();
+    fn map_lhs<Map>(&self, vmap: &Map) -> Self
+    where
+        Map: for<'a> Index<&'a V, Output = V>,
+    {
+        let lhs_boundary = self.lhs_boundary.iter().map(|v| vmap[v]).collect();
+        let lhs_internal = self.lhs_internal.iter().map(|v| vmap[v]).collect();
+        Self {
+            lhs_boundary,
+            lhs_internal,
+            ..self.clone()
+        }
+    }
+
+    fn apply<G: GraphLike>(&self, g: &mut G) -> CostDelta {
+        // Set mapping from RHSVertex indices to `g`
+        let mut new_r_names: HashMap<_, _> = self
+            .lhs_boundary
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(i, v)| (RHSVertex::Boundary(i), v))
+            .collect();
 
         // Remove the internal nodes of the LHS.
         for &v in &self.lhs_internal {
             g.remove_vertex(v);
         }
 
-        // Replace the LHS boundary nodes with the RHS's.
-        for (&l, &r) in self.lhs_boundary.iter().zip(self.rhs_boundary.iter()) {
-            new_r_names.insert(r, l);
-            g.set_phase(l, self.rhs.phase(r));
-            g.set_vertex_type(l, self.rhs.vertex_type(r));
-        }
+        // Insert new internal nodes for the RHS.
+        new_r_names.extend(
+            (0..self.rhs_n_internal).map(|i| (RHSVertex::Internal(i), g.add_vertex(VType::Z))),
+        );
 
-        // Insert the internal nodes of the RHS.
-        for r in self.rhs.vertices() {
-            if new_r_names.contains_key(&r) {
-                // It was already added as a boundary node.
-                continue;
-            }
+        // TODO: changes in phases/vtype on boundary
 
-            let vtype = self.rhs.vertex_type(r);
-            if vtype == VType::B {
-                continue;
-            }
-
-            let l = g.add_vertex_with_phase(vtype, self.rhs.phase(r));
-            new_r_names.insert(r, l);
-        }
-
-        // Reconnect the edges.
-        for (u, v, ty) in self.rhs.edges() {
-            let (Some(&u), Some(&v)) = (new_r_names.get(&u), new_r_names.get(&v)) else {
-                // Ignore the boundary edges.
-                continue;
-            };
-            assert_eq!(ty, EType::H);
-            g.add_edge_smart(u, v, ty);
+        // Add/Remove new edges.
+        for (u, v) in &self.rhs_new_edges {
+            let u = new_r_names[u];
+            let v = new_r_names[v];
+            // This will remove edge if it exists
+            g.add_edge_smart(u, v, EType::H);
         }
 
         self.cost_delta
@@ -124,7 +130,7 @@ impl<G: GraphLike> Rewrite<G> {
 }
 
 impl<G: GraphLike> Rewriter for CausalRewriter<G> {
-    type Rewrite = Rewrite<G>;
+    type Rewrite = Rewrite;
 
     fn get_rewrites(&self, graph: &impl GraphLike) -> Vec<Self::Rewrite> {
         let flow = CausalFlow::from_graph(graph).expect("no causal flow");
@@ -135,16 +141,14 @@ impl<G: GraphLike> Rewriter for CausalRewriter<G> {
                 self.get_rhs(m.pattern_id).iter().map(move |rhs| {
                     let lhs_boundary = m.boundary.clone();
                     let lhs_internal = m.internal.clone();
-                    let rhs_boundary = rhs.boundary().collect_vec();
-                    let cost_delta = -rhs.reduction;
-                    let rhs = rhs.graph();
-                    assert_eq!(lhs_boundary.len(), rhs_boundary.len());
+                    let rhs_new_edges = rhs.edges.clone();
                     Rewrite {
                         lhs_boundary,
-                        rhs_boundary,
                         lhs_internal,
-                        rhs,
-                        cost_delta,
+                        rhs_new_edges,
+                        rhs_n_internal: rhs.n_internal,
+                        cost_delta: rhs.cost_delta,
+                        pattern_id: m.pattern_id,
                     }
                 })
             })
@@ -156,13 +160,42 @@ impl<G: GraphLike> Rewriter for CausalRewriter<G> {
 
     fn apply_rewrite<H: GraphLike>(&self, rewrite: Self::Rewrite, graph: &H) -> RewriteResult<H> {
         let mut graph = graph.clone();
+        let p = self.matcher.get_pattern(rewrite.pattern_id);
         let cost_delta = rewrite.apply(&mut graph);
         RewriteResult { graph, cost_delta }
     }
 }
 
+/// Get edges in `rule_side` as RHSVertices.
+fn get_edges<G: GraphLike>(
+    rule_side: &impl RuleSide<G>,
+    include_internal: bool,
+) -> HashSet<(RHSVertex, RHSVertex)> {
+    let boundary = rule_side
+        .boundary()
+        .enumerate()
+        .map(|(i, v)| (v, RHSVertex::Boundary(i)));
+    let internal = rule_side
+        .internal()
+        .enumerate()
+        .map(|(i, v)| (v, RHSVertex::Internal(i)));
+    let vertex_map: HashMap<_, _> = if include_internal {
+        boundary.chain(internal).collect()
+    } else {
+        boundary.collect()
+    };
+    rule_side
+        .graph()
+        .edges()
+        .filter_map(move |(s, t, etype)| {
+            assert_eq!(etype, EType::H);
+            Some((*vertex_map.get(&s)?, *vertex_map.get(&t)?))
+        })
+        .collect()
+}
+
 impl<G: GraphLike + Clone> CausalRewriter<G> {
-    fn get_rhs(&self, lhs_idx: PatternID) -> &[RewriteRhs<G>] {
+    fn get_rhs(&self, lhs_idx: PatternID) -> &[CausalRewriterRHS] {
         let idx = &self.lhs_to_rhs[&lhs_idx];
         &self.all_rhs[idx.0]
     }
@@ -172,14 +205,30 @@ impl<G: GraphLike + Clone> CausalRewriter<G> {
         let mut map_to_rhs = HashMap::new();
         let mut all_rhs = Vec::new();
         for rw_set in rules {
+            let lhs = rw_set.lhs();
+            let lhs_edges = get_edges(&lhs, false);
+            let lhs_boundary_len = lhs.boundary().count();
+            for rhs in rw_set.rhss() {
+                assert_eq!(lhs_boundary_len, rhs.boundary().count());
+            }
+
             let rhs_idx = RhsIdx(all_rhs.len());
-            all_rhs.push(rw_set.rhss().to_owned());
-            let boundary = rw_set.lhs().boundary().collect_vec();
-            for (inputs, outputs) in rw_set.lhs().ios() {
-                let p = rw_set.lhs().graph();
+            all_rhs.push(
+                rw_set
+                    .rhss()
+                    .iter()
+                    .map(|rhs| CausalRewriterRHS::from_rhs(rhs, &lhs_edges))
+                    .collect(),
+            );
+            for (inputs, outputs) in lhs.ios() {
                 let inputs = HashSet::from_iter(inputs);
                 let outputs = HashSet::from_iter(outputs);
-                patterns.push(CausalPattern::new(p, boundary.clone(), inputs, outputs));
+                patterns.push(CausalPattern::new(
+                    lhs.graph(),
+                    lhs.boundary().collect(),
+                    inputs,
+                    outputs,
+                ));
                 map_to_rhs.insert(PatternID(patterns.len() - 1), rhs_idx);
             }
         }
@@ -191,11 +240,47 @@ impl<G: GraphLike + Clone> CausalRewriter<G> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+enum RHSVertex {
+    Boundary(usize),
+    Internal(usize),
+}
+
+/// A RHS of a causal rewrite rule.
+///
+/// The RHS graph is stored as the symmetric difference of edges between the LHS
+/// and RHS.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CausalRewriterRHS {
+    n_internal: usize,
+    edges: Vec<(RHSVertex, RHSVertex)>,
+    cost_delta: CostDelta,
+}
+
+impl CausalRewriterRHS {
+    fn from_rhs<G: GraphLike>(
+        rhs: &RewriteRhs<G>,
+        lhs_boundary_edges: &HashSet<(RHSVertex, RHSVertex)>,
+    ) -> Self {
+        let rhs_edges = get_edges(rhs, true);
+        let edges = rhs_edges
+            .symmetric_difference(lhs_boundary_edges)
+            .copied()
+            .collect();
+        CausalRewriterRHS {
+            n_internal: rhs.internal().count(),
+            edges,
+            cost_delta: -rhs.reduction,
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test {
     use crate::cost::{CostMetric, TwoQubitGateCount};
     use crate::rewrite_sets::test::rewrite_set_2qb_lc;
 
+    use super::RHSVertex::Boundary;
     use super::*;
     use quizx::json::decode_graph;
     use quizx::vec_graph::Graph;
@@ -286,5 +371,75 @@ pub(crate) mod test {
         }
 
         Ok(())
+    }
+
+    /// Test the following rewrite
+    /// ```text
+    ///       2 - 3         2 - 3
+    ///      / \       ->
+    ///     4 - 5           4 - 5
+    /// ```
+    #[rstest]
+    fn flow_preservation(mut small_graph: Graph) {
+        let rw = Rewrite {
+            lhs_boundary: vec![2, 3, 4, 5],
+            lhs_internal: HashSet::new(),
+            rhs_n_internal: 0,
+            rhs_new_edges: vec![
+                (RHSVertex::Boundary(0), RHSVertex::Boundary(2)),
+                (RHSVertex::Boundary(0), RHSVertex::Boundary(3)),
+            ],
+            cost_delta: 0,
+            pattern_id: PatternID(0),
+        };
+        let flow = CausalFlow::from_graph(&small_graph).expect("no causal flow");
+        assert!(rw.is_flow_preserving(&small_graph, &flow));
+
+        // Apply rewrite
+        rw.apply(&mut small_graph);
+        assert_eq!(small_graph.num_edges(), 7);
+    }
+
+    /// Test the following rewrite
+    /// ```text
+    ///    0 - 1 - 2         0   2
+    ///    |   |   |    ->    \ /
+    ///    |   |   |    ->    / \
+    ///    3 - 4 - 5         3   5
+    /// ```
+    #[test]
+    fn rewrite() {
+        let mut g = {
+            let mut g = Graph::new();
+            let line1 = (0..3).map(|_| g.add_vertex(VType::Z)).collect_vec();
+            let line2 = (0..3).map(|_| g.add_vertex(VType::Z)).collect_vec();
+            for i in 0..3 {
+                if i + 1 < 3 {
+                    g.add_edge_with_type(line1[i], line1[i + 1], EType::H);
+                    g.add_edge_with_type(line2[i], line2[i + 1], EType::H);
+                }
+                g.add_edge_with_type(line1[i], line2[i], EType::H);
+            }
+            g
+        };
+        let rw = Rewrite {
+            lhs_boundary: vec![0, 2, 3, 5],
+            lhs_internal: [1, 4].into_iter().collect(),
+            rhs_n_internal: 0,
+            rhs_new_edges: vec![
+                (Boundary(0), Boundary(2)),
+                (Boundary(1), Boundary(3)),
+                (Boundary(0), Boundary(3)),
+                (Boundary(1), Boundary(2)),
+            ],
+            // these don't matter
+            cost_delta: 0,
+            pattern_id: PatternID(0),
+        };
+        rw.apply(&mut g);
+        assert_eq!(g.num_vertices(), 4);
+        assert_eq!(g.num_edges(), 2);
+        assert_eq!(g.neighbors(0).collect_vec(), vec![5]);
+        assert_eq!(g.neighbors(3).collect_vec(), vec![2]);
     }
 }
