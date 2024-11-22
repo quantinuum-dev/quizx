@@ -14,6 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod approximate;
+
 use crate::graph::*;
 use crate::scalar::*;
 use num::Rational64;
@@ -165,7 +167,7 @@ impl<G: GraphLike> Decomposer<G> {
                                                     //println!("{:?}", gadget_nodes);
                                                     //let nts = cat_nodes.iter().fold(0, |acc, &x| if g.phase(x).denom() == &4 { acc + 1 } else { acc });
             if !cat_nodes.is_empty() {
-                // println!("using cat!");
+                println!("using cat!");
                 return self.push_cat_decomp(depth + 1, &g, &cat_nodes);
             }
             let ts = Decomposer::first_ts(&g);
@@ -892,5 +894,30 @@ mod tests {
         let mut d = Decomposer::new(&g);
         d.with_full_simp().save(true).decomp_all();
         assert_eq!(d.done.len(), 7 * 2 * 2);
+    }
+
+    /// |cat_6> from https://arxiv.org/abs/2202.09202
+    ///
+    /// https://github.com/zxcalc/quizx/issues/64
+    #[test]
+    fn cat6() {
+        let mut g = Graph::new();
+
+        let mut outputs = vec![];
+        let z = g.add_vertex(VType::Z);
+        for _ in 0..6 {
+            let t = g.add_vertex_with_phase(VType::Z, Rational64::new(1, 4));
+            g.add_edge_with_type(z, t, EType::H);
+
+            let out = g.add_vertex(VType::B);
+            g.add_edge(t, out);
+            outputs.push(out);
+        }
+        g.set_outputs(outputs);
+
+        let mut d = Decomposer::new(&g);
+        d.with_full_simp().save(true).use_cats(true).decomp_all(); // this line panics
+
+        assert_eq!(d.done.len(), 3);
     }
 }
