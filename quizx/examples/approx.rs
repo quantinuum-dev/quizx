@@ -14,7 +14,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::time::Instant;
 // use std::io;
 // use std::io::Write;
 use quizx::circuit::*;
@@ -29,17 +28,17 @@ use quizx::vec_graph::Graph;
 // use rand::rngs::StdRng;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let qs = 50;
+    let qs = 20;
     let c = Circuit::random()
         .qubits(qs)
-        .depth(2000)
+        .depth(500)
         .seed(1337)
         .p_t(0.05)
         .with_cliffords()
         .build();
     let mut g: Graph = c.to_graph();
     g.plug_inputs(&vec![BasisElem::Z0; qs]);
-    g.plug_output(0, BasisElem::Z1);
+    g.plug_outputs(&vec![BasisElem::Z1; qs]);
 
     println!("g has T-count: {}", g.tcount() / 2);
     quizx::simplify::full_simp(&mut g);
@@ -50,10 +49,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let d = d.decomp_parallel(3);
     let s1 = d.scalar.complex_value();
 
-    let a = ApproxDecomposer::new(SimpFunc::FullSimp);
-    let s2 = a.run(&g.clone(), 1000, &DumbTDecomposer);
-
     println!("{:?}", s1 * s1.conj());
+
+    let a = ApproxDecomposer::new(SimpFunc::FullSimp);
+    let iters = 2.0f64.powf(0.22 * g.tcount() as f64);
+    println!("{iters} iters");
+    let s2 = a.run(&g.clone(), iters as usize, &DumbTDecomposer);
+
     println!("{:?}", s2 * s2.conj());
 
     Ok(())
