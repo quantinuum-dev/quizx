@@ -26,6 +26,10 @@ pub trait DecomposeFn {
 }
 
 impl ApproxDecomposer {
+    pub fn new(simp_func: SimpFunc) -> ApproxDecomposer {
+        ApproxDecomposer { simp_func }
+    }
+
     pub fn run<G: GraphLike>(
         &self,
         graph: &G,
@@ -83,7 +87,7 @@ impl ApproxDecomposer {
     }
 }
 
-struct DumbTDecomposer;
+pub struct DumbTDecomposer;
 
 impl DecomposeFn for DumbTDecomposer {
     fn decompose<'a, G: GraphLike>(
