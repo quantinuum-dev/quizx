@@ -1,12 +1,15 @@
-use crate::graph::*;
+use crate::circuit::Circuit;
+use crate::graph::{self, *};
 use crate::phase::Phase;
 use crate::scalar::*;
+use crate::vec_graph::Graph;
+use itertools::Itertools;
 use num::complex::ComplexFloat;
 use num::rational::Ratio;
 use num::Complex;
 use rand::distributions::WeightedIndex;
 use rand::prelude::Distribution;
-use rand::thread_rng;
+use rand::{thread_rng, Rng};
 
 use super::SimpFunc;
 
@@ -16,7 +19,7 @@ pub struct ApproxDecomposer {
     simp_func: SimpFunc,
 }
 
-type PickDecomposition<G> = dyn Fn(G) -> G;
+type PickDecomposition<G> = dyn Fn(&mut G);
 
 pub trait DecomposeFn {
     fn decompose<'a, G: GraphLike>(
@@ -44,12 +47,39 @@ impl ApproxDecomposer {
         Complex::new(s.re / iters as f64, s.im / iters as f64)
     }
 
+    pub fn amplitude(&self, circ: &Circuit, eps: f64, xs: &[bool], decomposer: &impl DecomposeFn) -> f64 {
+        let mut g: Graph = circ.to_graph();
+        g.plug_inputs(&vec![BasisElem::Z0; circ.num_qubits()]);
+        g.plug_outputs(&xs.iter().map(|x| if *x {BasisElem::Z0} else {BasisElem::Z1}).collect_vec());
+        let iters = 50;
+        let c = self.run(&g, iters, decomposer);
+        (c * c.conj()).re()
+    }
+
+    pub fn metropolis_sample(&self, circ: &Circuit, mixing_steps: usize, eps: f64, decomposer: &impl DecomposeFn) -> Vec<bool> {
+        let mut rng = thread_rng();
+        let n = circ.num_qubits();
+        let mut xs = (0..n).map(|_| rng.gen()).collect_vec();
+        let mut p = self.amplitude(circ, eps, &xs, decomposer);
+        for _ in 0..mixing_steps {
+            let i = rng.gen_range(0..n);
+            let mut xs_new = xs.clone();
+            xs_new[i] = !xs[i];
+            let p_new = self.amplitude(circ, eps, &xs, decomposer);
+            if p_new > p || (p > 0.0 && rng.gen_bool(p_new / p)) {
+                xs = xs_new;
+                p = p_new;
+            }
+        }
+        xs
+    }
+
     fn run_one<G: GraphLike>(&self, graph: &G, decomposer: &impl DecomposeFn) -> ScalarN {
         let mut graph = graph.clone();
         while graph.tcount() > 0 {
             let options = decomposer.decompose(&graph);
             let choice: Box<PickDecomposition<G>> = self.pick(options);
-            graph = choice(graph);
+            choice(&mut graph);
             match self.simp_func {
                 SimpFunc::FullSimp => {
                     crate::simplify::full_simp(&mut graph);
@@ -101,14 +131,12 @@ impl DecomposeFn for DumbTDecomposer {
             .find(|v| graph.phase(*v).is_t())
             .unwrap();
 
-        let id_case = move |mut g: G| -> G {
+        let id_case = move |g: &mut G| {
             g.set_phase(v, Phase::zero());
-            g
         };
-        let s_case = move |mut g: G| -> G {
+        let s_case = move |g: &mut G| {
             g.set_phase(v, Ratio::new(1, 2));
             *g.scalar_mut() *= ScalarN::from_phase(Ratio::new(-1, 4));
-            g
         };
 
         let mut res: Vec<(ScalarN, Box<PickDecomposition<G>>)> = vec![];
