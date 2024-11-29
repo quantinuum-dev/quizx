@@ -87,6 +87,10 @@ impl ApproxDecomposer {
                 }
                 _ => {}
             }
+            // No need to decompose further if we produced a zero scalar
+            if graph.scalar().is_zero() {
+                return ScalarN::zero();
+            }
         }
 
         // No T-s left, graph should be fully reduced
