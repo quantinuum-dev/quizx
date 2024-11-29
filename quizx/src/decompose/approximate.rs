@@ -10,6 +10,7 @@ use num::Complex;
 use rand::distributions::WeightedIndex;
 use rand::prelude::Distribution;
 use rand::{thread_rng, Rng};
+use rayon::prelude::*;
 
 use super::SimpFunc;
 
@@ -21,7 +22,7 @@ pub struct ApproxDecomposer {
 
 type PickDecomposition<G> = dyn Fn(&mut G);
 
-pub trait DecomposeFn {
+pub trait DecomposeFn : Sync {
     fn decompose<'a, G: GraphLike>(
         &'a self,
         graph: &'a G,
@@ -33,21 +34,18 @@ impl ApproxDecomposer {
         ApproxDecomposer { simp_func }
     }
 
-    pub fn run<G: GraphLike>(
+    pub fn run<G: GraphLike, D: DecomposeFn>(
         &self,
         graph: &G,
         iters: usize,
-        decomposer: &impl DecomposeFn,
+        decomposer: &D,
     ) -> Complex<f64> {
-        let mut scalar = ScalarN::zero();
-        for _ in 0..iters {
-            scalar += self.run_one(graph, decomposer);
-        }
+        let scalar = (0..iters).into_par_iter().map(|_| self.run_one(graph, decomposer)).reduce_with(|s1, s2| s1 + s2).unwrap();
         let s = scalar.complex_value();
         Complex::new(s.re / iters as f64, s.im / iters as f64)
     }
 
-    pub fn amplitude(&self, circ: &Circuit, eps: f64, xs: &[bool], decomposer: &impl DecomposeFn) -> f64 {
+    pub fn amplitude<D: DecomposeFn>(&self, circ: &Circuit, eps: f64, xs: &[bool], decomposer: &D) -> f64 {
         let mut g: Graph = circ.to_graph();
         g.plug_inputs(&vec![BasisElem::Z0; circ.num_qubits()]);
         g.plug_outputs(&xs.iter().map(|x| if *x {BasisElem::Z0} else {BasisElem::Z1}).collect_vec());
@@ -56,7 +54,7 @@ impl ApproxDecomposer {
         (c * c.conj()).re()
     }
 
-    pub fn metropolis_sample(&self, circ: &Circuit, mixing_steps: usize, eps: f64, decomposer: &impl DecomposeFn) -> Vec<bool> {
+    pub fn metropolis_sample<D: DecomposeFn>(&self, circ: &Circuit, mixing_steps: usize, eps: f64, decomposer: &D) -> Vec<bool> {
         let mut rng = thread_rng();
         let n = circ.num_qubits();
         let mut xs = (0..n).map(|_| rng.gen()).collect_vec();
@@ -74,7 +72,7 @@ impl ApproxDecomposer {
         xs
     }
 
-    fn run_one<G: GraphLike>(&self, graph: &G, decomposer: &impl DecomposeFn) -> ScalarN {
+    fn run_one<G: GraphLike, D: DecomposeFn>(&self, graph: &G, decomposer: &D) -> ScalarN {
         let mut graph = graph.clone();
         while graph.tcount() > 0 {
             let options = decomposer.decompose(&graph);
