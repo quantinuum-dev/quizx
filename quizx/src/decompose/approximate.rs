@@ -49,7 +49,8 @@ impl ApproxDecomposer {
         let mut g: Graph = circ.to_graph();
         g.plug_inputs(&vec![BasisElem::Z0; circ.num_qubits()]);
         g.plug_outputs(&xs.iter().map(|x| if *x {BasisElem::Z0} else {BasisElem::Z1}).collect_vec());
-        let iters = 50;
+        self.simplify(&mut g);
+        let iters = 1;
         let c = self.run(&g, iters, decomposer);
         (c * c.conj()).re()
     }
@@ -78,15 +79,7 @@ impl ApproxDecomposer {
             let options = decomposer.decompose(&graph);
             let choice: Box<PickDecomposition<G>> = self.pick(options);
             choice(&mut graph);
-            match self.simp_func {
-                SimpFunc::FullSimp => {
-                    crate::simplify::full_simp(&mut graph);
-                }
-                SimpFunc::CliffordSimp => {
-                    crate::simplify::clifford_simp(&mut graph);
-                }
-                _ => {}
-            }
+            self.simplify(&mut graph);
             // No need to decompose further if we produced a zero scalar
             if graph.scalar().is_zero() {
                 return ScalarN::zero();
@@ -116,6 +109,18 @@ impl ApproxDecomposer {
         let dist = WeightedIndex::new(&weights).unwrap();
         let mut rng = thread_rng();
         options.swap_remove(dist.sample(&mut rng))
+    }
+
+    fn simplify<G: GraphLike>(&self, graph: &mut G) {
+        match self.simp_func {
+            SimpFunc::FullSimp => {
+                crate::simplify::full_simp(graph);
+            }
+            SimpFunc::CliffordSimp => {
+                crate::simplify::clifford_simp(graph);
+            }
+            _ => {}
+        }
     }
 }
 
