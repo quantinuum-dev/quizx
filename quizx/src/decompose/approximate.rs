@@ -22,7 +22,7 @@ pub struct ApproxDecomposer {
 
 type PickDecomposition<G> = dyn Fn(&mut G);
 
-pub trait DecomposeFn : Sync {
+pub trait DecomposeFn: Sync {
     fn decompose<'a, G: GraphLike>(
         &'a self,
         graph: &'a G,
@@ -40,22 +40,42 @@ impl ApproxDecomposer {
         iters: usize,
         decomposer: &D,
     ) -> Complex<f64> {
-        let scalar = (0..iters).into_par_iter().map(|_| self.run_one(graph, decomposer)).reduce_with(|s1, s2| s1 + s2).unwrap();
+        let scalar = (0..iters)
+            .into_par_iter()
+            .map(|_| self.run_one(graph, decomposer))
+            .reduce_with(|s1, s2| s1 + s2)
+            .unwrap();
         let s = scalar.complex_value();
         Complex::new(s.re / iters as f64, s.im / iters as f64)
     }
 
-    pub fn amplitude<D: DecomposeFn>(&self, circ: &Circuit, eps: f64, xs: &[bool], decomposer: &D) -> f64 {
+    pub fn amplitude<D: DecomposeFn>(
+        &self,
+        circ: &Circuit,
+        eps: f64,
+        xs: &[bool],
+        decomposer: &D,
+    ) -> f64 {
         let mut g: Graph = circ.to_graph();
         g.plug_inputs(&vec![BasisElem::Z0; circ.num_qubits()]);
-        g.plug_outputs(&xs.iter().map(|x| if *x {BasisElem::Z0} else {BasisElem::Z1}).collect_vec());
+        g.plug_outputs(
+            &xs.iter()
+                .map(|x| if *x { BasisElem::Z0 } else { BasisElem::Z1 })
+                .collect_vec(),
+        );
         self.simplify(&mut g);
         let iters = 1;
         let c = self.run(&g, iters, decomposer);
         (c * c.conj()).re()
     }
 
-    pub fn metropolis_sample<D: DecomposeFn>(&self, circ: &Circuit, mixing_steps: usize, eps: f64, decomposer: &D) -> Vec<bool> {
+    pub fn metropolis_sample<D: DecomposeFn>(
+        &self,
+        circ: &Circuit,
+        mixing_steps: usize,
+        eps: f64,
+        decomposer: &D,
+    ) -> Vec<bool> {
         let mut rng = thread_rng();
         let n = circ.num_qubits();
         let mut xs = (0..n).map(|_| rng.gen()).collect_vec();
