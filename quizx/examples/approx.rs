@@ -14,6 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::env;
+
 // use std::io;
 // use std::io::Write;
 use quizx::circuit::*;
@@ -28,19 +30,53 @@ use quizx::vec_graph::Graph;
 // use rand::rngs::StdRng;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let qs = 20;
-    let c = Circuit::random()
+    let debug = true;
+    let args: Vec<_> = env::args().collect();
+    let (qs, depth, min_weight, max_weight, seed) = if args.len() >= 6 {
+        (
+            args[1].parse().unwrap(),
+            args[2].parse().unwrap(),
+            args[3].parse().unwrap(),
+            args[4].parse().unwrap(),
+            args[5].parse().unwrap(),
+        )
+    } else {
+        // (50, 50, 2, 4, 1339)
+        (13, 15, 2, 4, 1338)
+    };
+    if debug {
+        println!(
+            "qubits: {}, depth: {}, min_weight: {}, max_weight: {}, seed: {}",
+            qs, depth, min_weight, max_weight, seed
+        );
+    }
+    let c = Circuit::random_pauli_gadget()
         .qubits(qs)
-        .depth(500)
-        .seed(1337)
-        .p_t(0.05)
-        .with_cliffords()
+        .depth(depth)
+        .seed(seed)
+        .min_weight(min_weight)
+        .max_weight(max_weight)
         .build();
+
+    let mut observable = Graph::new();
+    for _ in 0..qs {
+        let inp = observable.add_vertex(VType::B);
+        let z = observable.add_vertex_with_phase(VType::Z, 1);
+        let out = observable.add_vertex(VType::B);
+        observable.inputs_mut().push(inp);
+        observable.outputs_mut().push(out);
+        observable.add_edge(inp, z);
+        observable.add_edge(z, out);
+    }
+
     let mut g: Graph = c.to_graph();
     g.plug_inputs(&vec![BasisElem::Z0; qs]);
-    g.plug_outputs(&vec![BasisElem::Z1; qs]);
 
-    println!("g has T-count: {}", g.tcount() / 2);
+    let g_adj = &g.to_adjoint();
+    g.plug(&observable);
+    g.plug(g_adj);
+
+    println!("g has T-count: {}", g.tcount());
     quizx::simplify::full_simp(&mut g);
     println!("g has reduced T-count: {}", g.tcount());
 
@@ -49,14 +85,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let d = d.decomp_parallel(3);
     let s1 = d.scalar.complex_value();
 
-    println!("{:?}", s1 * s1.conj());
+    println!("{:?}", s1);
 
     let a = ApproxDecomposer::new(SimpFunc::FullSimp);
-    let iters = 2.0f64.powf(0.22 * g.tcount() as f64);
-    println!("{iters} iters");
-    let s2 = a.run(&g.clone(), iters as usize, &DumbTDecomposer);
+    let s2 = a.run(&g, 0.05, &DumbTDecomposer);
 
-    println!("{:?}", s2 * s2.conj());
+    println!("{:?}", s2);
 
     Ok(())
 }

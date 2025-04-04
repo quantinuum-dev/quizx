@@ -1,7 +1,11 @@
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
+
 use crate::circuit::Circuit;
-use crate::graph::{self, *};
+use crate::graph::*;
 use crate::phase::Phase;
 use crate::scalar::*;
+use crate::simplify::clifford_simp;
 use crate::vec_graph::Graph;
 use itertools::Itertools;
 use num::complex::ComplexFloat;
@@ -27,6 +31,8 @@ pub trait DecomposeFn: Sync {
         &'a self,
         graph: &'a G,
     ) -> Vec<(ScalarN, Box<PickDecomposition<G>>)>;
+
+    fn required_iters(&self, tcount: usize, eps: f64) -> usize;
 }
 
 impl ApproxDecomposer {
@@ -37,16 +43,30 @@ impl ApproxDecomposer {
     pub fn run<G: GraphLike, D: DecomposeFn>(
         &self,
         graph: &G,
-        iters: usize,
+        eps: f64,
         decomposer: &D,
     ) -> Complex<f64> {
-        let scalar = (0..iters)
+        let max_iters = decomposer.required_iters(graph.tcount(), eps);
+        let total = AtomicUsize::new(0);
+        let remaining_iters = AtomicUsize::new(max_iters);
+
+        let scalar = (0..max_iters)
             .into_par_iter()
-            .map(|_| self.run_one(graph, decomposer))
-            .reduce_with(|s1, s2| s1 + s2)
-            .unwrap();
-        let s = scalar.complex_value();
-        Complex::new(s.re / iters as f64, s.im / iters as f64)
+            .map(|_| self.run_one(graph, eps, decomposer))
+            .take_any_while(|(_, reduction)| {
+                // println!("{}", reduction);
+                total.fetch_add(1, Relaxed);
+                remaining_iters
+                    .fetch_update(Relaxed, Relaxed, |q| q.checked_sub(*reduction))
+                    .is_ok()
+            })
+            .map(|(s, _)| s)
+            .reduce(ScalarN::zero, |s1, s2| s1 + s2);
+
+        println!("max: {}, actual: {}", max_iters, total.load(Relaxed));
+        return scalar.complex_value()
+            * ((decomposer.required_iters(graph.tcount(), 1.0) as f64).sqrt()
+                / total.load(Relaxed) as f64);
     }
 
     pub fn amplitude<D: DecomposeFn>(
@@ -64,8 +84,7 @@ impl ApproxDecomposer {
                 .collect_vec(),
         );
         self.simplify(&mut g);
-        let iters = 1;
-        let c = self.run(&g, iters, decomposer);
+        let c = self.run(&g, eps, decomposer);
         (c * c.conj()).re()
     }
 
@@ -80,7 +99,8 @@ impl ApproxDecomposer {
         let n = circ.num_qubits();
         let mut xs = (0..n).map(|_| rng.gen()).collect_vec();
         let mut p = self.amplitude(circ, eps, &xs, decomposer);
-        for _ in 0..mixing_steps {
+        for step in 0..mixing_steps {
+            println!("{}", step);
             let i = rng.gen_range(0..n);
             let mut xs_new = xs.clone();
             xs_new[i] = !xs[i];
@@ -93,25 +113,57 @@ impl ApproxDecomposer {
         xs
     }
 
-    fn run_one<G: GraphLike, D: DecomposeFn>(&self, graph: &G, decomposer: &D) -> ScalarN {
+    fn run_one<G: GraphLike, D: DecomposeFn>(
+        &self,
+        graph: &G,
+        eps: f64,
+        decomposer: &D,
+    ) -> (ScalarN, usize) {
         let mut graph = graph.clone();
-        while graph.tcount() > 0 {
+        let initial_tcount = graph.tcount();
+        let mut curr_tcount = initial_tcount;
+        let mut iter_reduction = 0;
+        let mut depth = 0;
+        while curr_tcount > 0 {
             let options = decomposer.decompose(&graph);
             let choice: Box<PickDecomposition<G>> = self.pick(options);
             choice(&mut graph);
+            // curr_tcount -= 1;
             self.simplify(&mut graph);
+            depth += 1;
+            // Check how many Ts where cancelled
+            let old_tcount = curr_tcount;
+            curr_tcount = graph.tcount();
+            let mut num_cancelled = old_tcount - curr_tcount - 1;
             // No need to decompose further if we produced a zero scalar
             if graph.scalar().is_zero() {
-                return ScalarN::zero();
+                num_cancelled = old_tcount;
+            }
+            // Compute how many samples those cancelled T gates save
+            let mut saved_iters = (0..num_cancelled)
+                .map(|i| decomposer.required_iters(curr_tcount + i, eps))
+                .fold(0, |a, b| a + b);
+            // Divide by number of expected samples that will reach
+            let exp_visits =
+                decomposer.required_iters(initial_tcount, eps) as f64 / 2.0.powi(depth);
+            if exp_visits > 1.0 {
+                saved_iters = (saved_iters as f64 / exp_visits) as usize;
+            }
+            iter_reduction += saved_iters;
+            // No need to decompose further if we produced a zero scalar
+            if graph.scalar().is_zero() {
+                return (ScalarN::zero(), iter_reduction + 1);
             }
         }
 
-        // No T-s left, graph should be fully reduced
+        // No T-s left, graph should be fully reduceable
+        clifford_simp(&mut graph);
         if graph.num_vertices() != 0 {
             panic!("Graph was not fully reduced");
         }
+        // println!("{}", graph.scalar());
 
-        graph.scalar().clone()
+        (graph.scalar().clone(), iter_reduction + 1)
     }
 
     /// Given a list of decomposition options weighted by some scalar, pick one
@@ -155,7 +207,7 @@ impl DecomposeFn for DumbTDecomposer {
         let v = graph
             .vertices()
             .into_iter()
-            .find(|v| graph.phase(*v).is_t())
+            .find(|v| !graph.phase(*v).is_clifford())
             .unwrap();
 
         let id_case = move |g: &mut G| {
@@ -170,5 +222,9 @@ impl DecomposeFn for DumbTDecomposer {
         res.push((ScalarN::one(), Box::new(id_case)));
         res.push((ScalarN::one(), Box::new(s_case)));
         res
+    }
+
+    fn required_iters(&self, tcount: usize, eps: f64) -> usize {
+        (2.0f64.powf(0.23 * tcount as f64) / (eps * eps)) as usize
     }
 }
