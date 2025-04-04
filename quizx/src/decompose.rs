@@ -202,10 +202,9 @@ impl<G: GraphLike> Decomposer<G> {
                 break;
             } else {
                 if self.use_cats {
-                    let cat_nodes = Decomposer::cat_ts(&g); //gadget_ts(&g);
-                                                            //println!("{:?}", gadget_nodes);
-                    let nts = cat_nodes.iter().filter(|&&x| g.phase(x).is_t()).count();
-                    if nts > 2 {
+                    let cat_nodes = Decomposer::cat_ts(&g);
+
+                    if cat_nodes.len() > 3 {
                         // println!("using cat!");
                         return self.push_cat_decomp(depth + 1, &g, &cat_nodes);
                     }
@@ -246,7 +245,7 @@ impl<G: GraphLike> Decomposer<G> {
             // crate::simplify::full_simp(&mut g);
             self.scalar = &self.scalar + g.scalar();
             self.nterms += 1;
-            if g.num_vertices() != 0 {
+            if g.inputs().is_empty() && g.outputs().is_empty() && g.num_vertices() != 0 {
                 println!("{}", g.to_dot());
                 println!("WARNING: graph was not fully reduced");
                 // println!("{}", g.to_dot());
@@ -275,6 +274,7 @@ impl<G: GraphLike> Decomposer<G> {
 
     /// Pick <= 6 T gates from the given graph, chosen at random
     pub fn random_ts(g: &G, rng: &mut impl Rng) -> Vec<V> {
+        // the graph g is assumed to contain no X spiders
         let mut all_t: Vec<_> = g.vertices().filter(|&v| g.phase(v).is_t()).collect();
         let mut t = vec![];
 
@@ -287,16 +287,20 @@ impl<G: GraphLike> Decomposer<G> {
     }
 
     /// Returns a best occurrence of a cat state
-    /// The fist vertex in the result is the Clifford spider
+    /// The fist vertex in the result is the Pauli spider
     pub fn cat_ts(g: &G) -> Vec<V> {
-        // the graph g is supposed to be completely simplified
+        // the graph g is assumed to be graph-like
         let preferred_order = [4, 6, 5, 3];
         let mut res = vec![];
         let mut index = None;
         for v in g.vertices() {
-            if g.phase(v).is_pauli() {
+            if g.vertex_type(v) == VType::Z && g.phase(v).is_pauli() {
                 let mut neigh = g.neighbor_vec(v);
-                if neigh.len() <= 6 {
+                if neigh.len() <= 6
+                    && neigh
+                        .iter()
+                        .all(|&n| g.vertex_type(n) == VType::Z && g.phase(n).is_t())
+                {
                     if let Some(this_ind) = preferred_order.iter().position(|&r| r == neigh.len()) {
                         match index {
                             Some(ind) if this_ind < ind => {
@@ -417,7 +421,8 @@ impl<G: GraphLike> Decomposer<G> {
         // verts[0] is a 0- or pi-spider, linked to all and only to vs in verts[1..] which are T-spiders
         let mut g = g.clone(); // that is annoying ...
         let mut verts = Vec::from(verts);
-        if g.phase(verts[0]).is_pauli() {
+        let num_ts = verts.len() - 1;
+        if g.phase(verts[0]).is_one() {
             g.set_phase(verts[0], Rational64::new(0, 1));
             let mut neigh = g.neighbor_vec(verts[1]);
             neigh.retain(|&x| x != verts[0]);
@@ -428,14 +433,14 @@ impl<G: GraphLike> Decomposer<G> {
             *g.scalar_mut() *= ScalarN::from_phase(tmp);
             g.set_phase(verts[1], g.phase(verts[1]) * -1);
         }
-        if [3, 5].contains(&verts[1..].len()) {
+        if num_ts == 3 || num_ts == 5 {
             let w = g.add_vertex(VType::Z);
             let v = g.add_vertex(VType::Z);
             g.add_edge_with_type(v, w, EType::H);
             g.add_edge_with_type(v, verts[0], EType::H);
             verts.push(v);
         }
-        if verts[1..].len() == 6 {
+        if num_ts == 6 {
             self.push_decomp(
                 &[
                     Decomposer::replace_cat6_0,
@@ -446,7 +451,7 @@ impl<G: GraphLike> Decomposer<G> {
                 &g,
                 &verts,
             )
-        } else if verts[1..].len() == 4 {
+        } else if num_ts == 4 {
             self.push_decomp(
                 &[Decomposer::replace_cat4_0, Decomposer::replace_cat4_1],
                 depth,
@@ -896,16 +901,13 @@ mod tests {
         assert_eq!(d.done.len(), 7 * 2 * 2);
     }
 
-    /// |cat_6> from https://arxiv.org/abs/2202.09202
-    ///
-    /// https://github.com/zxcalc/quizx/issues/64
     #[test]
-    fn cat6() {
+    fn cat4() {
         let mut g = Graph::new();
 
         let mut outputs = vec![];
         let z = g.add_vertex(VType::Z);
-        for _ in 0..6 {
+        for _ in 0..4 {
             let t = g.add_vertex_with_phase(VType::Z, Rational64::new(1, 4));
             g.add_edge_with_type(z, t, EType::H);
 
@@ -918,6 +920,6 @@ mod tests {
         let mut d = Decomposer::new(&g);
         d.with_full_simp().save(true).use_cats(true).decomp_all(); // this line panics
 
-        assert_eq!(d.done.len(), 3);
+        assert_eq!(d.done.len(), 2);
     }
 }

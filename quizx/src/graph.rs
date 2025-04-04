@@ -47,8 +47,8 @@ pub enum VType {
 pub struct VData {
     pub ty: VType,
     pub phase: Phase,
-    pub qubit: i32,
-    pub row: i32,
+    pub qubit: f64,
+    pub row: f64,
 }
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -120,39 +120,39 @@ impl BasisElem {
 }
 
 /// Coordinates for rendering a node.
-#[derive(Display, Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, From)]
+#[derive(Display, Debug, Default, Clone, Copy, PartialEq, PartialOrd, From)]
 #[display("({},{})", x, y)]
 pub struct Coord {
-    pub x: i32,
-    pub y: i32,
+    pub x: f64,
+    pub y: f64,
 }
 
 impl Coord {
     /// Create a new coordinate.
-    pub fn new(x: i32, y: i32) -> Self {
+    pub fn new(x: f64, y: f64) -> Self {
         Coord { x, y }
     }
 
-    /// Casts the coordinates to f64.
-    pub fn to_f64(self) -> (f64, f64) {
-        (self.x as f64, self.y as f64)
-    }
+    // /// Casts the coordinates to f64.
+    // pub fn to_f64(self) -> (f64, f64) {
+    //     (self.x as f64, self.y as f64)
+    // }
 
-    /// Casts a pair of f64 to coordinates.
-    pub fn from_f64((x, y): (f64, f64)) -> Self {
-        Coord {
-            x: x.round() as i32,
-            y: y.round() as i32,
-        }
-    }
+    // /// Casts a pair of f64 to coordinates.
+    // pub fn from_f64((x, y): (f64, f64)) -> Self {
+    //     Coord {
+    //         x: x.round() as i32,
+    //         y: y.round() as i32,
+    //     }
+    // }
 
     /// Infer the qubit index from the y-coordinate.
-    pub fn qubit(&self) -> i32 {
+    pub fn qubit(&self) -> f64 {
         -self.y
     }
 
     /// Infer the row index from the x-coordinate.
-    pub fn row(&self) -> i32 {
+    pub fn row(&self) -> f64 {
         self.x
     }
 }
@@ -165,7 +165,7 @@ pub enum VIter<'a> {
     Hash(std::collections::hash_map::Keys<'a, V, VData>),
 }
 
-impl<'a> Iterator for VIter<'a> {
+impl Iterator for VIter<'_> {
     type Item = V;
     fn next(&mut self) -> Option<V> {
         match self {
@@ -196,7 +196,7 @@ impl<'a> Iterator for VIter<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for VIter<'a> {}
+impl ExactSizeIterator for VIter<'_> {}
 
 #[allow(clippy::type_complexity)]
 pub enum EIter<'a> {
@@ -212,7 +212,7 @@ pub enum EIter<'a> {
     ),
 }
 
-impl<'a> Iterator for EIter<'a> {
+impl Iterator for EIter<'_> {
     type Item = (V, V, EType);
     fn next(&mut self) -> Option<(V, V, EType)> {
         match self {
@@ -290,14 +290,14 @@ impl<'a> Iterator for EIter<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for EIter<'a> {}
+impl ExactSizeIterator for EIter<'_> {}
 
 pub enum NeighborIter<'a> {
     Vec(std::slice::Iter<'a, (V, EType)>),
     Hash(std::collections::hash_map::Keys<'a, V, EType>),
 }
 
-impl<'a> Iterator for NeighborIter<'a> {
+impl Iterator for NeighborIter<'_> {
     type Item = V;
     fn next(&mut self) -> Option<V> {
         match self {
@@ -315,14 +315,14 @@ impl<'a> Iterator for NeighborIter<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for NeighborIter<'a> {}
+impl ExactSizeIterator for NeighborIter<'_> {}
 
 pub enum IncidentEdgeIter<'a> {
     Vec(std::slice::Iter<'a, (V, EType)>),
     Hash(std::collections::hash_map::Iter<'a, V, EType>),
 }
 
-impl<'a> Iterator for IncidentEdgeIter<'a> {
+impl Iterator for IncidentEdgeIter<'_> {
     type Item = (V, EType);
     fn next(&mut self) -> Option<(V, EType)> {
         match self {
@@ -340,7 +340,7 @@ impl<'a> Iterator for IncidentEdgeIter<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for IncidentEdgeIter<'a> {}
+impl ExactSizeIterator for IncidentEdgeIter<'_> {}
 
 pub trait GraphLike: Clone + Sized + Send + Sync + std::fmt::Debug {
     /// Initialise a new empty graph
@@ -420,10 +420,10 @@ pub trait GraphLike: Clone + Sized + Send + Sync + std::fmt::Debug {
     fn edge_type_opt(&self, s: V, t: V) -> Option<EType>;
     fn set_coord(&mut self, v: V, coord: impl Into<Coord>);
     fn coord(&self, v: V) -> Coord;
-    fn set_qubit(&mut self, v: V, qubit: i32);
-    fn qubit(&self, v: V) -> i32;
-    fn set_row(&mut self, v: V, row: i32);
-    fn row(&self, v: V) -> i32;
+    fn set_qubit(&mut self, v: V, qubit: f64);
+    fn qubit(&self, v: V) -> f64;
+    fn set_row(&mut self, v: V, row: f64);
+    fn row(&self, v: V) -> f64;
     fn neighbors(&self, v: V) -> NeighborIter;
     fn incident_edges(&self, v: V) -> IncidentEdgeIter;
     fn degree(&self, v: V) -> usize;
@@ -545,7 +545,10 @@ pub trait GraphLike: Clone + Sized + Send + Sync + std::fmt::Debug {
                         }
                     }
                 }
-                _ => panic!("Parallel edges only supported between Z and X vertices"),
+                _ => panic!(
+                    "Parallel edges only supported between Z and X vertices ({:?} --> {:?})",
+                    st, tt
+                ),
             }
         } else {
             self.add_edge_with_type(s, t, ety);
@@ -713,7 +716,7 @@ pub trait GraphLike: Clone + Sized + Send + Sync + std::fmt::Debug {
             );
             let q = self.qubit(v);
             let r = self.row(v);
-            if q != 0 || r != 0 {
+            if q != 0.0 || r != 0.0 {
                 dot += &format!(", pos=\"{},{}!\"", q, r);
             }
             dot += "]\n";

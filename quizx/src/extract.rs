@@ -63,7 +63,7 @@ pub struct Extractor<'a, G: GraphLike> {
 }
 
 impl<'a, G: GraphLike> Extractor<'a, G> {
-    pub fn new(g: &'a mut G) -> Extractor<G> {
+    pub fn new(g: &'a mut G) -> Extractor<'a, G> {
         Extractor {
             g,
             frontier: Vec::new(),
@@ -318,7 +318,7 @@ impl<'a, G: GraphLike> Extractor<'a, G> {
                                 ty: VType::Z,
                                 phase: Phase::zero(),
                                 qubit: self.g.qubit(n),
-                                row: self.g.row(n) + 1,
+                                row: self.g.row(n) + 1.0,
                             };
                             let n1 = self.g.add_vertex_with_data(vd);
                             self.g
@@ -702,5 +702,23 @@ mod tests {
         assert!(Tensor4::scalar_compare(&g, &c));
         let c1 = g.to_circuit().unwrap();
         assert!(Tensor4::scalar_compare(&c, &c1));
+    }
+
+    #[test]
+    fn random_full_extract() {
+        for seed in [1337, 143, 105, 112] {
+            let c = Circuit::random()
+                .seed(seed)
+                .qubits(5)
+                .depth(40)
+                .p_t(0.2)
+                .with_cliffords()
+                .build();
+            let mut g: Graph = c.to_graph();
+            full_simp(&mut g);
+            // println!("{}", g.to_dot());
+            let c1 = g.to_circuit().expect("Circuit should extract.");
+            assert!(Tensor4::scalar_compare(&c, &c1));
+        }
     }
 }
