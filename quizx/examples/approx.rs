@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("{:?}", s1);
 
-    let a = ApproxDecomposer::new(SimpFunc::FullSimp);
+    let a = ApproxDecomposer::new(SimpFunc::FullSimp, true);
     let s2 = a.run(&g, 0.05, &DumbTDecomposer);
 
     println!("{:?}", s2);

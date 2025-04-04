@@ -40,7 +40,7 @@ fn main() {
     let scalar: Complex<f64>;
     let terms: usize;
     if let Some(epsilon) = cli.epsilon {
-        let decomposer = ApproxDecomposer::new(simp);
+        let decomposer = ApproxDecomposer::new(simp, cli.parallel);
         scalar = decomposer.run(&g, epsilon, &DumbTDecomposer);
         terms = 0;
     } else {

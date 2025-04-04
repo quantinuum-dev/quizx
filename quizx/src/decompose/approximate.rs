@@ -22,6 +22,7 @@ use super::SimpFunc;
 #[derive(Clone)]
 pub struct ApproxDecomposer {
     simp_func: SimpFunc,
+    parallel: bool,
 }
 
 type PickDecomposition<G> = dyn Fn(&mut G);
@@ -36,11 +37,48 @@ pub trait DecomposeFn: Sync {
 }
 
 impl ApproxDecomposer {
-    pub fn new(simp_func: SimpFunc) -> ApproxDecomposer {
-        ApproxDecomposer { simp_func }
+    pub fn new(simp_func: SimpFunc, parallel: bool) -> ApproxDecomposer {
+        ApproxDecomposer {
+            simp_func,
+            parallel,
+        }
     }
 
     pub fn run<G: GraphLike, D: DecomposeFn>(
+        &self,
+        graph: &G,
+        eps: f64,
+        decomposer: &D,
+    ) -> Complex<f64> {
+        if self.parallel {
+            self.run_serial(graph, eps, decomposer)
+        } else {
+            self.run_parallel(graph, eps, decomposer)
+        }
+    }
+
+    fn run_serial<G: GraphLike, D: DecomposeFn>(
+        &self,
+        graph: &G,
+        eps: f64,
+        decomposer: &D,
+    ) -> Complex<f64> {
+        let mut required_iters = decomposer.required_iters(graph.tcount(), eps);
+        let mut total_iters = 0;
+        let mut scalar = ScalarN::zero();
+
+        while required_iters > 0 {
+            let (s, iter_reduction) = self.run_one(graph, eps, decomposer);
+            required_iters = required_iters.saturating_sub(iter_reduction);
+            scalar += s;
+            total_iters += 1;
+        }
+
+        scalar.complex_value()
+            * ((decomposer.required_iters(graph.tcount(), 1.0) as f64).sqrt() / total_iters as f64)
+    }
+
+    fn run_parallel<G: GraphLike, D: DecomposeFn>(
         &self,
         graph: &G,
         eps: f64,
@@ -64,9 +102,9 @@ impl ApproxDecomposer {
             .reduce(ScalarN::zero, |s1, s2| s1 + s2);
 
         println!("max: {}, actual: {}", max_iters, total.load(Relaxed));
-        return scalar.complex_value()
+        scalar.complex_value()
             * ((decomposer.required_iters(graph.tcount(), 1.0) as f64).sqrt()
-                / total.load(Relaxed) as f64);
+                / total.load(Relaxed) as f64)
     }
 
     pub fn amplitude<D: DecomposeFn>(
