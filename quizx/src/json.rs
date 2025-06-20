@@ -56,7 +56,7 @@ use crate::hash_graph::{EType, GraphLike};
 
 use derive_more::{Display, Error, From};
 use serde::{de, Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Returns the json-encoded representation of a graph.
@@ -99,18 +99,18 @@ type EdgeName = String;
 pub struct JsonGraph {
     /// Wire vertices of the graph.
     #[serde(default)]
-    wire_vertices: HashMap<VertexName, VertexAttrs>,
+    wire_vertices: BTreeMap<VertexName, VertexAttrs>,
     /// Node vertices of the graph.
     #[serde(default)]
-    node_vertices: HashMap<VertexName, VertexAttrs>,
+    node_vertices: BTreeMap<VertexName, VertexAttrs>,
     /// Undirected edges between node vertices.
     #[serde(default)]
-    undir_edges: HashMap<EdgeName, EdgeAttrs>,
+    undir_edges: BTreeMap<EdgeName, EdgeAttrs>,
     /// Types of the variables in the graph.
     ///
     /// Currently ignored by quizx.
     #[serde(default)]
-    variable_types: HashMap<String, String>,
+    variable_types: BTreeMap<String, String>,
     /// The graph scalar.
     ///
     /// pyzx encodes this as a json-encoded string instead of directly embedding
@@ -187,7 +187,7 @@ struct VertexAnnotations {
     label: Option<String>,
     /// Other arbitrary annotations associated with the vertex.
     #[serde(flatten)]
-    other: HashMap<String, String>,
+    other: BTreeMap<String, String>,
 }
 
 /// Attributes for an edge in the json-encoded graph.
@@ -272,12 +272,12 @@ fn deserialize_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
 where
     D: de::Deserializer<'de>,
 {
-    let s: &str = de::Deserialize::deserialize(deserializer)?;
+    let s: String = de::Deserialize::deserialize(deserializer)?;
 
-    match s {
+    match s.as_str() {
         "true" => Ok(true),
         "false" => Ok(false),
-        _ => Err(de::Error::unknown_variant(s, &["true", "false"])),
+        _ => Err(de::Error::unknown_variant(s.as_str(), &["true", "false"])),
     }
 }
 

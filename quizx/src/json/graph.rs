@@ -26,21 +26,21 @@ use super::{
 use crate::graph::{Coord, EType, GraphLike, VData, VType, V};
 use crate::phase::Phase;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 impl JsonGraph {
     /// Encode a graph using the json representation.
     pub fn from_graph(graph: &impl GraphLike) -> Result<Self, JsonError> {
-        let mut wire_vertices = HashMap::new();
-        let mut node_vertices = HashMap::new();
-        let mut undir_edges = HashMap::new();
+        let mut wire_vertices = BTreeMap::new();
+        let mut node_vertices = BTreeMap::new();
+        let mut undir_edges = BTreeMap::new();
 
         // The encoding requires unique string names for vertices and edges.
         let mut vertex_name_gen = (0..).map(|i| format!("v{}", i));
         let mut bound_name_gen = (0..).map(|i| format!("b{}", i));
         let mut edge_name_gen = (0..).map(|i| format!("e{}", i));
 
-        let mut v_names: HashMap<V, VertexName> = HashMap::new();
+        let mut v_names: BTreeMap<V, VertexName> = BTreeMap::new();
 
         for v in graph.vertices() {
             let typ = graph.vertex_type(v);
@@ -153,7 +153,7 @@ impl JsonGraph {
         }
 
         let scalar = graph.scalar();
-        let scalar = scalar.is_one().then(|| JsonScalar::from_scalar(scalar));
+        let scalar = (!scalar.is_one()).then(|| JsonScalar::from_scalar(scalar));
 
         Ok(Self {
             wire_vertices,
@@ -172,11 +172,11 @@ impl JsonGraph {
             unimplemented!("Variables are not currently supported.");
         }
 
-        let mut names: HashMap<VertexName, V> = HashMap::new();
+        let mut names: BTreeMap<VertexName, V> = BTreeMap::new();
 
         // Map used to track auxiliary Hadamard nodes that should be decoded as Hadamard edges.
         // Stores the neighbor nodes of the Hadamard node, and the coordinate of the Hadamard node.
-        let mut hadamards: HashMap<&str, (Vec<V>, Coord)> = HashMap::new();
+        let mut hadamards: BTreeMap<&str, (Vec<V>, Coord)> = BTreeMap::new();
 
         for (name, attrs) in &self.node_vertices {
             let coord = Coord {
