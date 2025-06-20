@@ -3,26 +3,34 @@ use std::sync::atomic::Ordering::Relaxed;
 
 use crate::circuit::Circuit;
 use crate::graph::*;
-use crate::phase::Phase;
 use crate::scalar::*;
 use crate::simplify::clifford_simp;
 use crate::vec_graph::Graph;
 use itertools::Itertools;
 use num::complex::ComplexFloat;
 use num::rational::Ratio;
-use num::Complex;
+use num::{Complex, Signed};
 use rand::distributions::WeightedIndex;
 use rand::prelude::Distribution;
 use rand::{thread_rng, Rng};
 use rayon::prelude::*;
 
+use num::ToPrimitive;
+
+
 use super::SimpFunc;
+
+// Plan:
+// - In each node, store the current extent estimate for its children.
+// - Take one sample and build the path in the tree if it doesn't already exist
+// - Walk back up the tree and update extent estimates based on found optimizations
 
 /// Store the (partial) decomposition of a graph into stabilisers
 #[derive(Clone)]
 pub struct ApproxDecomposer {
     simp_func: SimpFunc,
     parallel: bool,
+    stored_samples: Option<Vec<ScalarN>>,
 }
 
 type PickDecomposition<G> = dyn Fn(&mut G);
@@ -31,7 +39,7 @@ pub trait DecomposeFn: Sync {
     fn decompose<'a, G: GraphLike>(
         &'a self,
         graph: &'a G,
-    ) -> Vec<(ScalarN, Box<PickDecomposition<G>>)>;
+    ) -> Vec<(f64, Box<PickDecomposition<G>>)>;
 
     fn required_iters(&self, tcount: usize, eps: f64) -> usize;
 }
@@ -41,24 +49,37 @@ impl ApproxDecomposer {
         ApproxDecomposer {
             simp_func,
             parallel,
+            stored_samples: None,
         }
     }
 
+    pub fn store_samples(&mut self) -> &mut Self {
+        if self.parallel {
+            panic!("Storing of individual samples only available for serial runs");
+        }
+        self.stored_samples = Some(vec![]);
+        self
+    }
+
+    pub fn get_stored_samples(self) -> Vec<ScalarN> {
+        self.stored_samples.unwrap()
+    }
+
     pub fn run<G: GraphLike, D: DecomposeFn>(
-        &self,
+        &mut self,
         graph: &G,
         eps: f64,
         decomposer: &D,
     ) -> Complex<f64> {
         if self.parallel {
-            self.run_serial(graph, eps, decomposer)
-        } else {
             self.run_parallel(graph, eps, decomposer)
+        } else {
+            self.run_serial(graph, eps, decomposer)
         }
     }
 
     fn run_serial<G: GraphLike, D: DecomposeFn>(
-        &self,
+        &mut self,
         graph: &G,
         eps: f64,
         decomposer: &D,
@@ -66,16 +87,28 @@ impl ApproxDecomposer {
         let mut required_iters = decomposer.required_iters(graph.tcount(), eps);
         let mut total_iters = 0;
         let mut scalar = ScalarN::zero();
+        if let Some(ref mut samples) = self.stored_samples {
+            samples.clear();
+        }
 
         while required_iters > 0 {
             let (s, iter_reduction) = self.run_one(graph, eps, decomposer);
+            if let Some(ref mut samples) = self.stored_samples {
+                samples.push(s.clone());
+            }
             required_iters = required_iters.saturating_sub(iter_reduction);
             scalar += s;
             total_iters += 1;
         }
 
+        // scalar.mul_sqrt2_pow((-0.23 * graph.tcount() as f64) as i32);
+        // scalar.complex_value() * eps.powi(2)
+
         scalar.complex_value()
             * ((decomposer.required_iters(graph.tcount(), 1.0) as f64).sqrt() / total_iters as f64)
+
+        // scalar.complex_value()
+        //     * eps.powi(2) / (decomposer.required_iters(graph.tcount(), 1.0) as f64).sqrt()
     }
 
     fn run_parallel<G: GraphLike, D: DecomposeFn>(
@@ -108,7 +141,7 @@ impl ApproxDecomposer {
     }
 
     pub fn amplitude<D: DecomposeFn>(
-        &self,
+        &mut self,
         circ: &Circuit,
         eps: f64,
         xs: &[bool],
@@ -127,7 +160,7 @@ impl ApproxDecomposer {
     }
 
     pub fn metropolis_sample<D: DecomposeFn>(
-        &self,
+        &mut self,
         circ: &Circuit,
         mixing_steps: usize,
         eps: f64,
@@ -154,44 +187,44 @@ impl ApproxDecomposer {
     fn run_one<G: GraphLike, D: DecomposeFn>(
         &self,
         graph: &G,
-        eps: f64,
+        _eps: f64,
         decomposer: &D,
     ) -> (ScalarN, usize) {
         let mut graph = graph.clone();
         let initial_tcount = graph.tcount();
         let mut curr_tcount = initial_tcount;
-        let mut iter_reduction = 0;
-        let mut depth = 0;
+        let iter_reduction = 0;
+        // let mut depth = 0;
         while curr_tcount > 0 {
             let options = decomposer.decompose(&graph);
             let choice: Box<PickDecomposition<G>> = self.pick(options);
             choice(&mut graph);
-            // curr_tcount -= 1;
-            self.simplify(&mut graph);
-            depth += 1;
-            // Check how many Ts where cancelled
-            let old_tcount = curr_tcount;
-            curr_tcount = graph.tcount();
-            let mut num_cancelled = old_tcount - curr_tcount - 1;
-            // No need to decompose further if we produced a zero scalar
-            if graph.scalar().is_zero() {
-                num_cancelled = old_tcount;
-            }
-            // Compute how many samples those cancelled T gates save
-            let mut saved_iters = (0..num_cancelled)
-                .map(|i| decomposer.required_iters(curr_tcount + i, eps))
-                .fold(0, |a, b| a + b);
-            // Divide by number of expected samples that will reach
-            let exp_visits =
-                decomposer.required_iters(initial_tcount, eps) as f64 / 2.0.powi(depth);
-            if exp_visits > 1.0 {
-                saved_iters = (saved_iters as f64 / exp_visits) as usize;
-            }
-            iter_reduction += saved_iters;
-            // No need to decompose further if we produced a zero scalar
-            if graph.scalar().is_zero() {
-                return (ScalarN::zero(), iter_reduction + 1);
-            }
+            curr_tcount -= 1;
+            // self.simplify(&mut graph);
+            // depth += 1;
+            // // Check how many Ts where cancelled
+            // let old_tcount = curr_tcount;
+            // curr_tcount = graph.tcount();
+            // let mut num_cancelled = old_tcount - curr_tcount - 1;
+            // // No need to decompose further if we produced a zero scalar
+            // if graph.scalar().is_zero() {
+            //     num_cancelled = old_tcount;
+            // }
+            // // Compute how many samples those cancelled T gates save
+            // let mut saved_iters = (0..num_cancelled)
+            //     .map(|i| decomposer.required_iters(curr_tcount + i, eps))
+            //     .fold(0, |a, b| a + b);
+            // // Divide by number of expected samples that will reach
+            // let exp_visits =
+            //     decomposer.required_iters(initial_tcount, eps) as f64 / 2.0.powi(depth);
+            // if exp_visits > 1.0 {
+            //     saved_iters = (saved_iters as f64 / exp_visits) as usize;
+            // }
+            // iter_reduction += saved_iters;
+            // // No need to decompose further if we produced a zero scalar
+            // if graph.scalar().is_zero() {
+            //     return (ScalarN::zero(), iter_reduction + 1);
+            // }
         }
 
         // No T-s left, graph should be fully reduceable
@@ -208,13 +241,8 @@ impl ApproxDecomposer {
     /// randomly based on the absolute value of the scalar.
     fn pick<'a, G: GraphLike>(
         &self,
-        options: Vec<(ScalarN, Box<PickDecomposition<G>>)>,
+        options: Vec<(f64, Box<PickDecomposition<G>>)>,
     ) -> Box<PickDecomposition<G>> {
-        // Convert the scalars to their absolute values, so we can use them as weights when picking
-        let options = options
-            .into_iter()
-            .map(|(s, f)| (s.complex_value().abs(), f));
-        // Collect both values
         let (weights, mut options): (Vec<_>, Vec<_>) = options.into_iter().unzip();
         let dist = WeightedIndex::new(&weights).unwrap();
         let mut rng = thread_rng();
@@ -240,25 +268,82 @@ impl DecomposeFn for DumbTDecomposer {
     fn decompose<'a, G: GraphLike>(
         &'a self,
         graph: &'a G,
-    ) -> Vec<(ScalarN, Box<PickDecomposition<G>>)> {
+    ) -> Vec<(f64, Box<PickDecomposition<G>>)> {
         // Find the first T spider
+        let v = graph
+            .vertices()
+            .into_iter()
+            .find(|v| graph.phase(*v).is_t())
+            .unwrap();
+        let old_phase = graph.phase(v);
+        let pi4 = Ratio::new(1, 4);
+        assert!(old_phase.to_rational().denom().is_positive());
+
+        let id_case = move |g: &mut G| {
+            g.add_to_phase(v, -pi4);
+        };
+        let s_case = move |g: &mut G| {
+            g.add_to_phase(v, pi4);
+            *g.scalar_mut() *= ScalarN::from_phase(-pi4) //* ScalarN::from_phase(old_phase / 2);
+        };
+
+        let mut res: Vec<(f64, Box<PickDecomposition<G>>)> = vec![];
+        res.push((1.0, Box::new(id_case)));
+        res.push((1.0, Box::new(s_case)));
+        res
+    }
+
+    fn required_iters(&self, tcount: usize, eps: f64) -> usize {
+        (2.0f64.powf(0.23 * tcount as f64) / (eps * eps)) as usize
+    }
+}
+
+
+
+pub struct GenericDecomposer;
+
+impl DecomposeFn for GenericDecomposer {
+    fn decompose<'a, G: GraphLike>(
+        &'a self,
+        graph: &'a G,
+    ) -> Vec<(f64, Box<PickDecomposition<G>>)> {
+        // Find the first non-clifford spider
         let v = graph
             .vertices()
             .into_iter()
             .find(|v| !graph.phase(*v).is_clifford())
             .unwrap();
+        let mut theta = graph.phase(v).normalize().to_rational();
+
+        // Restrict theta to (0, pi/2) by adding/subtracting a Clifford phase delta
+        let pi2 = Ratio::new(1, 2);
+        let delta = match (theta.is_negative(), theta.abs() > pi2) {
+            (false, false) => Ratio::zero(),
+            (false, true) => pi2,
+            (true, false) => -pi2,
+            (true, true) => -Ratio::one(),
+        };
+        theta -= delta;
+        assert!(Ratio::zero() < theta && theta < pi2);
+
+        let theta2 = theta.to_f64().unwrap() * std::f64::consts::PI / 2.0;
+        let id_weight = theta2.cos() - theta2.sin();
+        let s_weight = theta2.sin() * 2.0.sqrt();
+
+        assert!(id_weight.is_sign_positive());
+        assert!(s_weight.is_sign_positive());
 
         let id_case = move |g: &mut G| {
-            g.set_phase(v, Phase::zero());
+            g.set_phase(v, delta);
         };
         let s_case = move |g: &mut G| {
-            g.set_phase(v, Ratio::new(1, 2));
+            g.set_phase(v, delta + pi2);
             *g.scalar_mut() *= ScalarN::from_phase(Ratio::new(-1, 4));
         };
 
-        let mut res: Vec<(ScalarN, Box<PickDecomposition<G>>)> = vec![];
-        res.push((ScalarN::one(), Box::new(id_case)));
-        res.push((ScalarN::one(), Box::new(s_case)));
+        let mut res: Vec<(f64, Box<PickDecomposition<G>>)> = vec![];
+        res.push((id_weight, Box::new(id_case)));
+        res.push((s_weight, Box::new(s_case)));
         res
     }
 
